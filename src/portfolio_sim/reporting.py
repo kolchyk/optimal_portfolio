@@ -3,6 +3,7 @@
 import json
 from pathlib import Path
 
+import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
@@ -73,6 +74,51 @@ def format_metrics_table(metrics: dict) -> str:
         f"  Trading Days:   {metrics['n_days']:>8d}",
     ]
     return "\n".join(lines)
+
+
+def save_equity_png(
+    equity: pd.Series, output_dir: Path, title: str = "Equity Curve"
+) -> Path:
+    """Save equity curve + drawdown chart as PNG. Returns path."""
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(14, 8), gridspec_kw={"height_ratios": [3, 1]}, sharex=True
+    )
+    fig.suptitle(title, fontsize=14, fontweight="bold")
+
+    # Equity curve
+    ax1.plot(equity.index, equity.values, color="#2962FF", linewidth=1.2)
+    ax1.fill_between(equity.index, equity.values, alpha=0.08, color="#2962FF")
+    ax1.set_ylabel("Portfolio Value ($)")
+    ax1.grid(True, alpha=0.3)
+    ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
+
+    # Drawdown
+    dd = compute_drawdown_series(equity)
+    ax2.fill_between(dd.index, dd.values * 100, color="#e74c3c", alpha=0.5)
+    ax2.plot(dd.index, dd.values * 100, color="#e74c3c", linewidth=0.8)
+    ax2.set_ylabel("Drawdown (%)")
+    ax2.set_xlabel("Date")
+    ax2.grid(True, alpha=0.3)
+    ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+
+    # Metrics annotation
+    metrics = compute_metrics(equity)
+    text = (
+        f"CAGR: {metrics['cagr']:.1%}  |  "
+        f"MaxDD: {metrics['max_drawdown']:.1%}  |  "
+        f"Sharpe: {metrics['sharpe']:.2f}  |  "
+        f"Calmar: {metrics['calmar']:.2f}"
+    )
+    fig.text(0.5, 0.01, text, ha="center", fontsize=10, color="#555")
+
+    fig.tight_layout(rect=[0, 0.03, 1, 0.97])
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    path = output_dir / "equity_curve.png"
+    fig.savefig(path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Equity curve saved to {path}")
+    return path
 
 
 def save_wfv_report(wfv_result: dict, metric: str, output_dir: Path) -> Path:

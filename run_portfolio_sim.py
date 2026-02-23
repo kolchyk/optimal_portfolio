@@ -19,6 +19,7 @@ from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.reporting import (
     compute_metrics,
     format_metrics_table,
+    save_equity_png,
     save_wfv_json,
     save_wfv_report,
 )
@@ -106,6 +107,11 @@ def main():
 
         save_wfv_report(wfv_result, metric=args.metric, output_dir=output_dir)
         save_wfv_json(wfv_result, output_dir=output_dir)
+        save_equity_png(
+            wfv_result["oos_equity"],
+            output_dir,
+            title="Walk-Forward OOS Equity Curve",
+        )
 
         # Print final OOS metrics
         oos_metrics = compute_metrics(wfv_result["oos_equity"])
@@ -134,6 +140,7 @@ def main():
         )
 
         eq_series = pd.Series(equity, index=sim_prices.index[: len(equity)])
+        save_equity_png(eq_series, output_dir, title="Single Run Equity Curve")
         metrics = compute_metrics(eq_series)
         print(f"\n{format_metrics_table(metrics)}")
 

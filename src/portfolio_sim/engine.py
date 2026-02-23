@@ -158,7 +158,7 @@ def run_simulation(
         for t in tickers:
             if t == SAFE_HAVEN_TICKER:
                 continue
-            t_kama = kama_cache.get(t, pd.Series(dtype=float)).get(date, np.nan)
+            t_kama = kama_cache[t].get(date, np.nan) if t in kama_cache else np.nan
             if not np.isnan(t_kama):
                 total_valid += 1
                 if daily_prices[t] > t_kama:
@@ -183,7 +183,7 @@ def run_simulation(
         for t in tickers:
             if t == SAFE_HAVEN_TICKER or shares[t] <= 0:
                 continue
-            t_kama = kama_cache.get(t, pd.Series(dtype=float)).get(date, np.nan)
+            t_kama = kama_cache[t].get(date, np.nan) if t in kama_cache else np.nan
             if not np.isnan(t_kama) and daily_prices[t] < t_kama:
                 stop_tickers.append(t)
 

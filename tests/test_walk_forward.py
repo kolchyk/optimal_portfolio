@@ -33,18 +33,19 @@ def test_windows_non_overlapping():
 
 
 def test_chain_equity_basic():
-    seg1 = pd.Series([100, 110, 120], index=pd.date_range("2023-01-01", periods=3))
-    seg2 = pd.Series([100, 90, 95], index=pd.date_range("2023-01-04", periods=3))
+    # Segments as returned by engine (each started with initial_capital=1000)
+    seg1 = pd.Series([1000, 1100, 1200], index=pd.date_range("2023-01-01", periods=3))
+    seg2 = pd.Series([1000, 900, 950], index=pd.date_range("2023-01-04", periods=3))
 
     chained = _chain_equity_segments([seg1, seg2], initial_capital=1000)
 
     assert len(chained) == 6
-    # First segment scaled: starts at 1000
+    # First segment unscaled (scale = 1000/1000 = 1.0)
     assert chained.iloc[0] == pytest.approx(1000.0)
-    # End of first segment: 1000 * (120/100) = 1200
     assert chained.iloc[2] == pytest.approx(1200.0)
-    # Start of second segment: should equal end of first (1200)
+    # Second segment scaled by 1200/1000 = 1.2
     assert chained.iloc[3] == pytest.approx(1200.0)
+    assert chained.iloc[5] == pytest.approx(1140.0)
 
 
 def test_chain_equity_empty():
@@ -53,7 +54,7 @@ def test_chain_equity_empty():
 
 
 def test_chain_equity_single_segment():
-    seg = pd.Series([100, 150], index=pd.date_range("2023-01-01", periods=2))
+    seg = pd.Series([500, 750], index=pd.date_range("2023-01-01", periods=2))
     chained = _chain_equity_segments([seg], initial_capital=500)
     assert len(chained) == 2
     assert chained.iloc[0] == pytest.approx(500.0)

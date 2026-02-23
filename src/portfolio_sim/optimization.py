@@ -118,7 +118,7 @@ def run_optimization(
     print(f"Using {n_workers} worker processes...")
 
     db_path = output_dir / "optuna_study.db"
-    storage_url = f"sqlite:///{db_path}"
+    storage_url = f"sqlite:///{db_path}?timeout=30"
     study_name = f"portfolio_opt_{metric}"
 
     if db_path.exists():

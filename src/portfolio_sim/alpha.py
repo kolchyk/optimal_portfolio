@@ -38,7 +38,7 @@ def compute_target_weights(
         if t != SAFE_HAVEN_TICKER
         and t in prices_window.columns
         and not np.isnan(prices_window[t].iloc[-1])
-        and prices_window[t].iloc[-1] > kama_values.get(t, 0)
+        and prices_window[t].iloc[-1] > kama_values.get(t, np.inf)
     ]
 
     if not candidates:
@@ -66,7 +66,7 @@ def compute_target_weights(
 
     # Step 4: Correlation walk-down
     candidate_tickers = [t for t, _ in ranked]
-    returns_df = prices_window[candidate_tickers].pct_change().dropna()
+    returns_df = prices_window[candidate_tickers].pct_change(fill_method=None)
     corr_matrix = returns_df.corr().fillna(0)
 
     selected: list[str] = []
@@ -82,8 +82,8 @@ def compute_target_weights(
         return np.zeros(len(tickers))
 
     # Step 5: Inverse volatility weighting
-    recent_returns = prices_window[selected].pct_change().iloc[-20:]
-    vol = (recent_returns.std() * np.sqrt(252)).clip(lower=VOL_FLOOR)
+    recent_returns = prices_window[selected].pct_change(fill_method=None).iloc[-20:]
+    vol = (recent_returns.std() * np.sqrt(252)).fillna(VOL_FLOOR).clip(lower=VOL_FLOOR)
 
     raw_weights = 1.0 / vol
     raw_weights = raw_weights / raw_weights.sum()

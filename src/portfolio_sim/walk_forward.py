@@ -212,7 +212,7 @@ def _chain_equity_segments(
     for seg in segments:
         if seg.empty or seg.iloc[0] == 0:
             continue
-        scale = current_capital / seg.iloc[0]
+        scale = current_capital / initial_capital
         scaled = seg * scale
         chained_values.extend(scaled.values.tolist())
         chained_index.extend(seg.index.tolist())
