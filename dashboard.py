@@ -197,7 +197,7 @@ def _render_comparison_table(strat_m: dict, spy_m: dict):
         "Trading Days": (f"{strat_m['n_days']:,}", f"{spy_m['n_days']:,}"),
     }
     df = pd.DataFrame(rows, index=["Strategy", "S&P 500"]).T
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -484,7 +484,7 @@ def _render_trade_log(result: SimulationResult):
                 "trade_value": "Trade Value",
             }
         ),
-        use_container_width=True,
+        width="stretch",
         height=400,
     )
 
@@ -539,7 +539,7 @@ def _render_sidebar() -> dict:
 
         st.markdown("---")
         run_clicked = st.button(
-            "Run Backtest", type="primary", use_container_width=True
+            "Run Backtest", type="primary", width="stretch"
         )
 
     return {
@@ -632,11 +632,11 @@ def main():
     # --- Section 3: Equity Curve ---
     log_scale = st.checkbox("Log scale", value=False)
     st.plotly_chart(
-        plot_equity_curve(result, log_scale=log_scale), use_container_width=True
+        plot_equity_curve(result, log_scale=log_scale), width="stretch"
     )
 
     # --- Section 4: Drawdown ---
-    st.plotly_chart(plot_drawdowns(result), use_container_width=True)
+    st.plotly_chart(plot_drawdowns(result), width="stretch")
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
@@ -645,18 +645,18 @@ def main():
     with col_left:
         st.plotly_chart(
             plot_monthly_heatmap(result.equity, "Strategy Monthly Returns"),
-            use_container_width=True,
+            width="stretch",
         )
     with col_right:
         st.plotly_chart(
             plot_yearly_returns(result.equity, result.spy_equity),
-            use_container_width=True,
+            width="stretch",
         )
 
     # --- Section 6: Rolling Sharpe ---
     st.plotly_chart(
         plot_rolling_sharpe(result.equity, result.spy_equity),
-        use_container_width=True,
+        width="stretch",
     )
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -665,12 +665,12 @@ def main():
     tab_pie, tab_area = st.tabs(["Current Holdings", "Holdings Over Time"])
     with tab_pie:
         st.plotly_chart(
-            plot_holdings_pie(result, close_prices), use_container_width=True
+            plot_holdings_pie(result, close_prices), width="stretch"
         )
     with tab_area:
         st.plotly_chart(
             plot_holdings_over_time(result, close_prices),
-            use_container_width=True,
+            width="stretch",
         )
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
