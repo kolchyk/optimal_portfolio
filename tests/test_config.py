@@ -1,43 +1,26 @@
 """Tests for config module."""
 
-import pytest
-
 from src.portfolio_sim.config import (
     INITIAL_CAPITAL,
-    MAX_GROSS_EXPOSURE,
-    MAX_WEIGHT,
-    REBALANCE_INTERVAL,
+    KAMA_BUFFER,
+    KAMA_PERIOD,
+    LOOKBACK_PERIOD,
     SPY_TICKER,
-    VOL_FLOOR,
-    StrategyParams,
+    TOP_N,
 )
 
 
-def test_strategy_params_defaults():
-    params = StrategyParams()
-    assert params.kama_period == 10
-    assert params.lookback_period == 21
-    assert params.top_n_selection == 10
-
-
-def test_strategy_params_custom():
-    params = StrategyParams(kama_period=15, top_n_selection=20)
-    assert params.kama_period == 15
-    assert params.top_n_selection == 20
-    # Others remain default
-    assert params.lookback_period == 21
-
-
-def test_strategy_params_frozen():
-    params = StrategyParams()
-    with pytest.raises(AttributeError):
-        params.kama_period = 30  # type: ignore[misc]
-
-
-def test_constants():
+def test_constants_values():
     assert INITIAL_CAPITAL == 10_000
-    assert MAX_WEIGHT == 0.15
-    assert MAX_GROSS_EXPOSURE == 1.0
-    assert VOL_FLOOR == 0.05
-    assert REBALANCE_INTERVAL == 5
+    assert KAMA_PERIOD == 20
+    assert LOOKBACK_PERIOD == 60
+    assert TOP_N == 20
+    assert KAMA_BUFFER == 0.01
     assert SPY_TICKER == "SPY"
+
+
+def test_constants_types():
+    assert isinstance(KAMA_PERIOD, int)
+    assert isinstance(LOOKBACK_PERIOD, int)
+    assert isinstance(TOP_N, int)
+    assert isinstance(KAMA_BUFFER, float)

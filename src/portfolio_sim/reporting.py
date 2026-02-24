@@ -1,6 +1,5 @@
 """Performance metrics, drawdown computation, and report generation."""
 
-import json
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -76,131 +75,69 @@ def format_metrics_table(metrics: dict) -> str:
     return "\n".join(lines)
 
 
+def format_comparison_table(strat_metrics: dict, spy_metrics: dict) -> str:
+    """Format side-by-side comparison of strategy vs SPY metrics."""
+    lines = [
+        f"{'Metric':<20} {'Strategy':>12} {'S&P 500':>12}",
+        "-" * 46,
+        f"{'Total Return':<20} {strat_metrics['total_return']:>11.1%} {spy_metrics['total_return']:>11.1%}",
+        f"{'CAGR':<20} {strat_metrics['cagr']:>11.1%} {spy_metrics['cagr']:>11.1%}",
+        f"{'Max Drawdown':<20} {strat_metrics['max_drawdown']:>11.1%} {spy_metrics['max_drawdown']:>11.1%}",
+        f"{'Sharpe Ratio':<20} {strat_metrics['sharpe']:>11.2f} {spy_metrics['sharpe']:>11.2f}",
+        f"{'Calmar Ratio':<20} {strat_metrics['calmar']:>11.2f} {spy_metrics['calmar']:>11.2f}",
+        f"{'Ann. Volatility':<20} {strat_metrics['annualized_vol']:>11.1%} {spy_metrics['annualized_vol']:>11.1%}",
+        f"{'Trading Days':<20} {strat_metrics['n_days']:>11d} {spy_metrics['n_days']:>11d}",
+    ]
+    return "\n".join(lines)
+
+
 def save_equity_png(
     equity: pd.Series,
+    spy_equity: pd.Series,
     output_dir: Path,
-    title: str = "Equity Curve",
-    net_exposures: pd.Series | None = None,
+    title: str = "KAMA Momentum Strategy vs S&P 500",
 ) -> Path:
-    """Save equity curve + drawdown (+ optional net exposure) chart as PNG."""
-    if net_exposures is not None and not net_exposures.empty:
-        fig, (ax1, ax2, ax3) = plt.subplots(
-            3, 1, figsize=(14, 10),
-            gridspec_kw={"height_ratios": [3, 1, 1]}, sharex=True,
-        )
-    else:
-        fig, (ax1, ax2) = plt.subplots(
-            2, 1, figsize=(14, 8),
-            gridspec_kw={"height_ratios": [3, 1]}, sharex=True,
-        )
-        ax3 = None
-
+    """Save strategy-vs-SPY equity comparison chart as PNG."""
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(14, 8),
+        gridspec_kw={"height_ratios": [3, 1]}, sharex=True,
+    )
     fig.suptitle(title, fontsize=14, fontweight="bold")
 
-    # Equity curve
-    ax1.plot(equity.index, equity.values, color="#2962FF", linewidth=1.2)
-    ax1.fill_between(equity.index, equity.values, alpha=0.08, color="#2962FF")
+    # Panel 1: Equity curves
+    ax1.plot(equity.index, equity.values, color="#2962FF", linewidth=1.5,
+             label="KAMA Momentum")
+    ax1.plot(spy_equity.index, spy_equity.values, color="#888888",
+             linewidth=1.2, linestyle="--", label="S&P 500 (Buy & Hold)")
     ax1.set_ylabel("Portfolio Value ($)")
+    ax1.legend(loc="upper left")
     ax1.grid(True, alpha=0.3)
     ax1.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"${x:,.0f}"))
 
-    # Drawdown
+    # Panel 2: Drawdown (strategy only)
     dd = compute_drawdown_series(equity)
     ax2.fill_between(dd.index, dd.values * 100, color="#e74c3c", alpha=0.5)
     ax2.plot(dd.index, dd.values * 100, color="#e74c3c", linewidth=0.8)
     ax2.set_ylabel("Drawdown (%)")
+    ax2.set_xlabel("Date")
     ax2.grid(True, alpha=0.3)
-    ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
 
-    # Net Exposure
-    if ax3 is not None and net_exposures is not None:
-        colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in net_exposures.values]
-        ax3.bar(net_exposures.index, net_exposures.values * 100,
-                color=colors, width=1.5, alpha=0.7)
-        ax3.axhline(y=0, color="gray", linewidth=0.5, linestyle="--")
-        ax3.set_ylabel("Net Exp (%)")
-        ax3.set_xlabel("Date")
-        ax3.grid(True, alpha=0.3)
-        ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
-    else:
-        ax2.set_xlabel("Date")
-
-    # Metrics annotation
-    metrics = compute_metrics(equity)
+    # Metrics annotation for both
+    strat_metrics = compute_metrics(equity)
+    spy_metrics = compute_metrics(spy_equity)
     text = (
-        f"CAGR: {metrics['cagr']:.1%}  |  "
-        f"MaxDD: {metrics['max_drawdown']:.1%}  |  "
-        f"Sharpe: {metrics['sharpe']:.2f}  |  "
-        f"Calmar: {metrics['calmar']:.2f}"
+        f"Strategy -- CAGR: {strat_metrics['cagr']:.1%}  MaxDD: {strat_metrics['max_drawdown']:.1%}  "
+        f"Sharpe: {strat_metrics['sharpe']:.2f}\n"
+        f"S&P 500 -- CAGR: {spy_metrics['cagr']:.1%}  MaxDD: {spy_metrics['max_drawdown']:.1%}  "
+        f"Sharpe: {spy_metrics['sharpe']:.2f}"
     )
-    fig.text(0.5, 0.01, text, ha="center", fontsize=10, color="#555")
+    fig.text(0.5, 0.01, text, ha="center", fontsize=9, color="#555")
 
-    fig.tight_layout(rect=[0, 0.03, 1, 0.97])
+    fig.tight_layout(rect=[0, 0.05, 1, 0.97])
 
     output_dir.mkdir(parents=True, exist_ok=True)
     path = output_dir / "equity_curve.png"
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Equity curve saved to {path}")
-    return path
-
-
-def save_wfv_report(wfv_result: dict, metric: str, output_dir: Path) -> Path:
-    """Save Walk-Forward Validation markdown report. Returns path."""
-    oos_equity = wfv_result["oos_equity"]
-    windows = wfv_result["windows"]
-    oos_metrics = compute_metrics(oos_equity)
-
-    report = [
-        "# Walk-Forward Validation Report",
-        f"\n**OOS Period:** {oos_equity.index[0].strftime('%Y-%m-%d')} to "
-        f"{oos_equity.index[-1].strftime('%Y-%m-%d')}",
-        f"**Optimization Metric:** {metric.upper()}",
-        f"**Windows:** {len(windows)}",
-        "\n## OOS Performance (Blind Test)",
-        f"\n- **Total Return:** {oos_metrics['total_return']:.1%}",
-        f"- **CAGR:** {oos_metrics['cagr']:.1%}",
-        f"- **Max Drawdown:** {oos_metrics['max_drawdown']:.1%}",
-        f"- **Sharpe:** {oos_metrics['sharpe']:.2f}",
-        f"- **Calmar:** {oos_metrics['calmar']:.2f}",
-        "\n## Window Breakdown",
-        "\n| Window | Train Period | Test Period | IS Score | OOS Return | OOS MaxDD |",
-        "| :---: | :--- | :--- | :---: | :---: | :---: |",
-    ]
-
-    for w in windows:
-        report.append(
-            f"| {w['window']} | {w['train_start']} -> {w['train_end']} | "
-            f"{w['test_start']} -> {w['test_end']} | "
-            f"{w['is_score']:.4f} | {w['oos_return_pct']:.1f}% | "
-            f"{w['oos_max_dd_pct']:.1f}% |"
-        )
-
-    report.append("\n## Parameters Per Window")
-    for w in windows:
-        report.append(f"\n### Window {w['window']}")
-        report.append("\n| Parameter | Value |")
-        report.append("| :--- | :--- |")
-        for k, v in w["params"].items():
-            report.append(f"| {k} | {v} |")
-
-    report.append("\n---")
-    report.append(
-        f"\n*Generated on: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}*"
-    )
-
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "wfv_report.md"
-    path.write_text("\n".join(report))
-    print(f"WFV report saved to {path}")
-    return path
-
-
-def save_wfv_json(wfv_result: dict, output_dir: Path) -> Path:
-    """Save WFV window details as JSON. Returns path."""
-    output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "wfv_windows.json"
-    with open(path, "w") as f:
-        json.dump(wfv_result["windows"], f, indent=2, default=str)
-    print(f"WFV JSON saved to {path}")
     return path

@@ -1,9 +1,9 @@
-"""Bar-by-bar simulation engine with Long/Short Equity support.
+"""Bar-by-bar simulation engine — Long/Cash only.
 
 Signals computed on Close(T), execution on Open(T+1).
-Market Breathing: SPY vs KAMA(SPY) determines bull/bear regime.
-Symmetric KAMA trailing stops for both long and short positions.
-Cash accounting model supports negative share positions (shorts).
+Market Breathing: SPY vs KAMA(SPY) determines risk-on/risk-off.
+KAMA stop-loss with buffer for individual positions.
+Lazy execution: don't sell good positions just to rebalance.
 """
 
 import numpy as np
@@ -12,248 +12,234 @@ import pandas as pd
 from src.portfolio_sim.alpha import compute_target_weights
 from src.portfolio_sim.config import (
     COMMISSION_RATE,
-    REBALANCE_INTERVAL,
-    SAFE_HAVEN_TICKER,
+    KAMA_BUFFER,
+    KAMA_PERIOD,
+    LOOKBACK_PERIOD,
     SLIPPAGE_RATE,
     SPY_TICKER,
-    StrategyParams,
 )
 from src.portfolio_sim.indicators import compute_kama_series
 
+COST_RATE = COMMISSION_RATE + SLIPPAGE_RATE
+
 
 def run_simulation(
-    sim_prices: pd.DataFrame,
-    sim_open: pd.DataFrame,
-    full_prices: pd.DataFrame,
+    close_prices: pd.DataFrame,
+    open_prices: pd.DataFrame,
     tickers: list[str],
-    params: StrategyParams,
     initial_capital: float,
-) -> tuple[list[float], list[float], list[float], np.ndarray]:
+) -> tuple[pd.Series, pd.Series]:
     """Run a full bar-by-bar portfolio simulation.
 
     Args:
-        sim_prices: Close prices for the simulation period.
-        sim_open: Open prices for the simulation period (same index).
-        full_prices: Full history of Close prices (for lookback/indicators).
-        tickers: master list of tradable tickers (including SHV).
-        params: the 3 tunable strategy parameters.
+        close_prices: Full history of Close prices (DatetimeIndex rows,
+                      ticker columns). Must include SPY.
+        open_prices: Full history of Open prices (same shape/index).
+        tickers: list of tradable ticker symbols (excludes SPY).
         initial_capital: starting cash.
 
     Returns:
-        equity: daily portfolio values (Close mark-to-market).
-        gross_exposures: daily gross exposure ratio (sum of |weights|, excl SHV).
-        net_exposures: daily net exposure ratio (sum of signed weights, excl SHV).
-        final_weights: last-applied target weights array.
+        equity: pd.Series of daily portfolio value (Close mark-to-market).
+        spy_equity: pd.Series of SPY buy-and-hold equity for benchmark.
     """
-    lookback = params.lookback_period
-
-    equity: list[float] = []
-    gross_exposures: list[float] = []
-    net_exposures: list[float] = []
-
-    # Cash accounting model
-    cash = initial_capital
-    shares: dict[str, float] = {t: 0.0 for t in tickers}
-    current_weights = np.zeros(len(tickers))
-
     # ------------------------------------------------------------------
-    # 0. Pre-compute KAMA for all tickers on full history
+    # 0. Pre-compute KAMA for all tickers + SPY
     # ------------------------------------------------------------------
     kama_cache: dict[str, pd.Series] = {}
     for t in list(set(tickers + [SPY_TICKER])):
-        if t in full_prices.columns:
+        if t in close_prices.columns:
             kama_cache[t] = compute_kama_series(
-                full_prices[t].dropna(), period=params.kama_period
+                close_prices[t].dropna(), period=KAMA_PERIOD
             )
 
     # ------------------------------------------------------------------
-    # 1. Initial signal (on Close of the day before sim start)
+    # 1. Determine simulation start (need warm-up for KAMA + lookback)
     # ------------------------------------------------------------------
-    idx_start = full_prices.index.get_loc(sim_prices.index[0])
-    past_prices_init = full_prices.iloc[idx_start - lookback : idx_start][tickers]
+    warmup = max(LOOKBACK_PERIOD, KAMA_PERIOD) + 10
+    if len(close_prices) <= warmup:
+        raise ValueError(f"Need at least {warmup} rows, got {len(close_prices)}")
 
-    prev_date = full_prices.index[idx_start - 1]
-    kama_init = {
-        t: kama_cache[t].get(prev_date, 0)
-        for t in tickers
-        if t in kama_cache and not np.isnan(kama_cache[t].get(prev_date, np.nan))
-    }
+    sim_dates = close_prices.index[warmup:]
 
-    # Determine initial regime from SPY
-    spy_kama_init = kama_cache.get(SPY_TICKER, pd.Series(dtype=float)).get(prev_date, np.nan)
-    spy_price_init = (
-        full_prices[SPY_TICKER].iloc[idx_start - 1]
-        if SPY_TICKER in full_prices.columns
-        else np.nan
-    )
-    if np.isnan(spy_kama_init) or np.isnan(spy_price_init):
-        initial_is_bull = True  # Default to bull during warm-up
-    else:
-        initial_is_bull = bool(spy_price_init > spy_kama_init)
-
-    pending_weights = compute_target_weights(
-        past_prices_init, tickers, params, kama_init, is_bull=initial_is_bull
-    )
-
-    # Park remainder in SHV
-    net_invested = pending_weights.sum()
-    if SAFE_HAVEN_TICKER in tickers:
-        safe_idx = tickers.index(SAFE_HAVEN_TICKER)
-        pending_weights[safe_idx] = 1.0 - net_invested
-
-    prev_is_bull: bool | None = initial_is_bull
+    # SPY buy-and-hold benchmark
+    spy_prices = close_prices[SPY_TICKER].loc[sim_dates]
+    spy_equity = initial_capital * (spy_prices / spy_prices.iloc[0])
 
     # ------------------------------------------------------------------
-    # 2. Day-by-day loop
+    # 2. State
     # ------------------------------------------------------------------
-    for i, (date, daily_prices) in enumerate(sim_prices.iterrows()):
-        open_prices = sim_open.loc[date].fillna(daily_prices)
+    cash = initial_capital
+    shares: dict[str, float] = {}  # ticker -> num shares (only held positions)
+    equity_values: list[float] = []
 
-        # --- Execute pending orders on Open ---
-        if pending_weights is not None:
-            # Current equity at open prices
+    # Pending trades: dict of ticker -> target_weight, or None.
+    # Special: empty dict {} means "sell everything" (bear regime).
+    pending_trades: dict[str, float] | None = None
+
+    # ------------------------------------------------------------------
+    # 3. Day-by-day loop
+    # ------------------------------------------------------------------
+    for i, date in enumerate(sim_dates):
+        daily_close = close_prices.loc[date]
+        daily_open = open_prices.loc[date]
+
+        # --- Execute pending trades on Open ---
+        if pending_trades is not None:
             equity_at_open = cash + sum(
-                shares[t] * open_prices[t] for t in tickers
+                shares[t] * daily_open.get(t, 0.0) for t in shares
             )
             if equity_at_open <= 0:
                 equity_at_open = max(cash, 1.0)
 
-            turnover = 0.0
-            new_shares: dict[str, float] = {}
-
-            for j, t in enumerate(tickers):
-                target_val = equity_at_open * pending_weights[j]
-                current_val = shares[t] * open_prices[t]
-                turnover += abs(target_val - current_val)
-
-                if open_prices[t] > 0:
-                    new_shares[t] = target_val / open_prices[t]
-                else:
-                    new_shares[t] = 0.0
-
-            cost = turnover * (COMMISSION_RATE + SLIPPAGE_RATE)
-
-            # Update cash: remainder after deploying weights + deduct costs
-            cash = equity_at_open * (1.0 - pending_weights.sum()) - cost
-            shares = new_shares
-            current_weights = pending_weights
-            pending_weights = None
+            cash = _execute_trades(shares, pending_trades, equity_at_open, daily_open)
+            pending_trades = None
 
         # --- Mark-to-market on Close ---
         equity_value = cash + sum(
-            shares[t] * daily_prices[t] for t in tickers
+            shares[t] * daily_close.get(t, 0.0) for t in shares
         )
+        equity_values.append(equity_value)
 
-        if np.isnan(equity_value) or equity_value <= 0.001 * initial_capital:
-            equity_value = 0.0
-            remaining = len(sim_prices) - len(equity)
-            equity.extend([0.0] * remaining)
-            gross_exposures.extend([0.0] * remaining)
-            net_exposures.extend([0.0] * remaining)
+        if equity_value <= 0:
+            equity_values.extend([0.0] * (len(sim_dates) - i - 1))
             break
 
-        equity.append(equity_value)
-
-        # Exposure tracking (excl SHV)
-        denom = equity_value if abs(equity_value) > 1e-6 else 1.0
-        gross_exp = sum(
-            abs(shares[t] * daily_prices[t])
-            for t in tickers
-            if t != SAFE_HAVEN_TICKER
-        ) / denom
-        net_exp = sum(
-            shares[t] * daily_prices[t]
-            for t in tickers
-            if t != SAFE_HAVEN_TICKER
-        ) / denom
-        gross_exposures.append(gross_exp)
-        net_exposures.append(net_exp)
-
-        # ------------------------------------------------------------------
-        # 3. Compute signals on Close(T) for execution on Open(T+1)
-        # ------------------------------------------------------------------
+        # --- Compute signals on Close(T) for Open(T+1) ---
 
         # Market Breathing: SPY vs KAMA(SPY)
-        spy_kama = kama_cache.get(SPY_TICKER, pd.Series(dtype=float)).get(date, np.nan)
-        spy_close = daily_prices.get(SPY_TICKER, np.nan) if SPY_TICKER in daily_prices.index else np.nan
-
-        if np.isnan(spy_kama) or np.isnan(spy_close):
-            is_bull = True  # Default to bull during warm-up
+        spy_close = daily_close.get(SPY_TICKER, np.nan)
+        spy_kama_s = kama_cache.get(SPY_TICKER, pd.Series(dtype=float))
+        spy_kama = spy_kama_s.get(date, np.nan) if date in spy_kama_s.index else np.nan
+        if np.isnan(spy_close) or np.isnan(spy_kama):
+            is_bull = True
         else:
             is_bull = bool(spy_close > spy_kama)
 
-        # Regime change detection: force rebalance on transition
-        regime_changed = (prev_is_bull is not None) and (is_bull != prev_is_bull)
-        prev_is_bull = is_bull
+        # Bear regime: sell everything
+        if not is_bull and shares:
+            pending_trades = {}
+            continue
 
-        # Symmetric KAMA trailing stops
-        should_rebalance = regime_changed or (i > 0 and i % REBALANCE_INTERVAL == 0)
-
-        stop_tickers: list[str] = []
-        for t in tickers:
-            if t == SAFE_HAVEN_TICKER or shares[t] == 0.0:
-                continue
-            t_kama = kama_cache[t].get(date, np.nan) if t in kama_cache else np.nan
+        # KAMA stop-loss: identify positions to sell
+        sells: dict[str, float] = {}
+        for t in list(shares.keys()):
+            t_kama_s = kama_cache.get(t, pd.Series(dtype=float))
+            t_kama = t_kama_s.get(date, np.nan) if date in t_kama_s.index else np.nan
             if np.isnan(t_kama):
                 continue
+            if daily_close.get(t, 0.0) < t_kama * (1 - KAMA_BUFFER):
+                sells[t] = 0.0  # mark for selling
 
-            if shares[t] > 0 and daily_prices[t] < t_kama:
-                # Long position stopped: price dropped below KAMA
-                stop_tickers.append(t)
-            elif shares[t] < 0 and daily_prices[t] > t_kama:
-                # Short position stopped: price rose above KAMA
-                stop_tickers.append(t)
+        # Get target portfolio from alpha
+        idx_in_full = close_prices.index.get_loc(date)
+        start = max(0, idx_in_full - LOOKBACK_PERIOD + 1)
+        past_prices = close_prices.iloc[start : idx_in_full + 1][tickers]
 
-        if should_rebalance:
-            # Full rebalance
-            idx_in_full = full_prices.index.get_loc(date)
-            past_prices = full_prices.iloc[
-                idx_in_full - lookback + 1 : idx_in_full + 1
-            ][tickers]
+        kama_current: dict[str, float] = {}
+        for t in tickers:
+            if t in kama_cache:
+                t_kama_s = kama_cache[t]
+                val = t_kama_s.get(date, np.nan) if date in t_kama_s.index else np.nan
+                if not np.isnan(val):
+                    kama_current[t] = val
 
-            kama_current = {
-                t: kama_cache[t].get(date, 0)
-                for t in tickers
-                if t in kama_cache
-                and not np.isnan(kama_cache[t].get(date, np.nan))
-            }
+        target_weights = compute_target_weights(
+            past_prices, tickers, kama_current, is_bull=is_bull
+        )
 
-            new_weights = compute_target_weights(
-                past_prices, tickers, params, kama_current, is_bull=is_bull
-            )
+        # --- Lazy execution logic ---
+        # Sell: stopped-out positions or positions no longer in target
+        # Buy: new target positions not already held
+        # Keep: existing positions still in target (don't touch)
 
-            # Park remainder in SHV
-            net_invested = new_weights.sum()
-            if SAFE_HAVEN_TICKER in tickers:
-                safe_idx = tickers.index(SAFE_HAVEN_TICKER)
-                new_weights[safe_idx] = 1.0 - net_invested
+        new_trades: dict[str, float] = {}
 
-            pending_weights = new_weights
+        # Mark stopped positions for sell
+        for t in sells:
+            if t in shares:
+                new_trades[t] = 0.0
 
-        elif stop_tickers:
-            # Partial rebalance: exit stopped positions to SHV
-            new_weights = np.zeros(len(tickers))
-            freed_weight = 0.0
+        # Mark positions not in target for sell (only if they're also not stopped —
+        # stopped ones are already marked above)
+        for t in list(shares.keys()):
+            if t not in target_weights and t not in new_trades:
+                new_trades[t] = 0.0
 
-            for j, t in enumerate(tickers):
-                w = (
-                    (shares[t] * daily_prices[t]) / equity_value
-                    if equity_value > 0
-                    else 0.0
-                )
-                if t in stop_tickers:
-                    freed_weight += abs(w)
-                else:
-                    new_weights[j] = w
+        # Buy new positions that are in target but not already held
+        for t in target_weights:
+            if t not in shares:
+                new_trades[t] = target_weights[t]
 
-            if SAFE_HAVEN_TICKER in tickers and freed_weight > 0:
-                safe_idx = tickers.index(SAFE_HAVEN_TICKER)
-                new_weights[safe_idx] += freed_weight
+        if new_trades:
+            pending_trades = new_trades
 
-            total = new_weights.sum()
-            if total > 0:
-                new_weights /= total
+    equity_series = pd.Series(
+        equity_values, index=sim_dates[: len(equity_values)]
+    )
+    spy_series = spy_equity.iloc[: len(equity_values)]
 
-            pending_weights = new_weights
+    return equity_series, spy_series
 
-    return equity, gross_exposures, net_exposures, current_weights
+
+def _execute_trades(
+    shares: dict[str, float],
+    trades: dict[str, float],
+    equity_at_open: float,
+    open_prices: pd.Series,
+) -> float:
+    """Execute trades: sell positions with weight=0, buy new ones.
+
+    Mutates `shares` in place. Returns remaining cash.
+
+    If trades is empty dict: sell everything (bear regime / all cash).
+    Otherwise: sell positions with target=0.0, buy positions with target>0.
+    """
+    total_cost = 0.0
+
+    # Sell everything (bear regime)
+    if not trades:
+        cash = 0.0
+        for t in list(shares.keys()):
+            price = open_prices.get(t, 0.0)
+            if price > 0 and shares[t] > 0:
+                trade_value = shares[t] * price
+                total_cost += trade_value * COST_RATE
+                cash += trade_value
+            del shares[t]
+        return equity_at_open - sum(s * open_prices.get(t, 0.0) for t, s in shares.items()) - total_cost + cash
+        # Simplified: everything is sold, cash = equity - costs
+
+    # Partial trades: sell some, buy some
+    freed_cash = 0.0
+
+    # First: execute sells
+    for t, w in list(trades.items()):
+        if w == 0.0 and t in shares:
+            price = open_prices.get(t, 0.0)
+            if price > 0:
+                trade_value = shares[t] * price
+                freed_cash += trade_value
+                total_cost += trade_value * COST_RATE
+            del shares[t]
+
+    # Compute current cash position
+    held_value = sum(shares[t] * open_prices.get(t, 0.0) for t in shares)
+    cash = equity_at_open - held_value
+
+    # Available for new buys = freed cash + existing cash - costs so far
+    available = cash - total_cost
+
+    # Execute buys: allocate available cash equally among new positions
+    buys = {t: w for t, w in trades.items() if w > 0 and t not in shares}
+    if buys and available > 0:
+        per_position = available / len(buys)
+        for t in buys:
+            price = open_prices.get(t, 0.0)
+            if price > 0:
+                num_shares = per_position / price
+                shares[t] = num_shares
+                total_cost += per_position * COST_RATE
+
+    # Final cash
+    held_value = sum(shares[t] * open_prices.get(t, 0.0) for t in shares)
+    return equity_at_open - held_value - total_cost

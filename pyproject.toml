@@ -1,7 +1,7 @@
 [project]
 name = "optimal_portfolio"
 version = "0.1.0"
-description = "Simplified quantitative portfolio investment module with Walk-Forward Validation"
+description = "Simplified KAMA momentum strategy backtester for S&P 500"
 requires-python = ">=3.12"
 dependencies = [
     "structlog>=25.1.0",
@@ -10,8 +10,8 @@ dependencies = [
     "yfinance>=0.2.36",
     "plotly>=5.18.0",
     "matplotlib>=3.9.0",
-    "optuna>=4.0.0",
     "numba>=0.60.0",
+    "lxml>=5.0.0",
     "streamlit>=1.40.0",
     "pyarrow>=15.0.0",
 ]

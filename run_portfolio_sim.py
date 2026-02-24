@@ -1,8 +1,9 @@
-"""CLI entry point for portfolio simulation.
+"""CLI entry point for KAMA momentum portfolio simulation.
 
 Usage:
-    python run_portfolio_sim.py --walk-forward --n-trials 100
-    python run_portfolio_sim.py  # single run with default params
+    python run_portfolio_sim.py
+    python run_portfolio_sim.py --refresh
+    python run_portfolio_sim.py --period 10y
 """
 
 import argparse
@@ -10,46 +11,29 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
-import pandas as pd
 import structlog
 
-from src.portfolio_sim.config import INITIAL_CAPITAL, StrategyParams
-from src.portfolio_sim.data import fetch_price_data, load_tickers
+from src.portfolio_sim.config import INITIAL_CAPITAL
+from src.portfolio_sim.data import fetch_price_data, fetch_sp500_tickers
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.reporting import (
     compute_metrics,
-    format_metrics_table,
+    format_comparison_table,
     save_equity_png,
-    save_wfv_json,
-    save_wfv_report,
 )
-from src.portfolio_sim.walk_forward import run_walk_forward
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Portfolio Simulation CLI")
-    parser.add_argument(
-        "--walk-forward",
-        action="store_true",
-        default=False,
-        help="Run Walk-Forward Validation (production mode)",
+    parser = argparse.ArgumentParser(
+        description="KAMA Momentum Strategy -- S&P 500 backtest"
     )
     parser.add_argument(
-        "--metric",
-        choices=["calmar", "sharpe", "return"],
-        default="calmar",
-        help="Optimization metric (default: calmar)",
-    )
-    parser.add_argument(
-        "--n-trials",
-        type=int,
-        default=100,
-        help="Number of Optuna trials per WFV window (default: 100)",
-    )
-    parser.add_argument(
-        "--refresh",
-        action="store_true",
+        "--refresh", action="store_true",
         help="Force refresh data cache from yfinance",
+    )
+    parser.add_argument(
+        "--period", default="15y",
+        help="yfinance period string (default: 15y)",
     )
     return parser.parse_args()
 
@@ -57,7 +41,6 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
 
-    # Configure structlog
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     structlog.configure(
         processors=[
@@ -70,97 +53,42 @@ def main():
     )
 
     # Output directory
-    mode = "wfv" if args.walk_forward else "sim"
     dt = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path("output") / f"{mode}_{args.metric}_{args.n_trials}t_{dt}"
+    output_dir = Path("output") / f"sim_{dt}"
     output_dir.mkdir(parents=True, exist_ok=True)
-    print(f"Output directory: {output_dir}")
 
-    # Load data
-    print("\nLoading ticker universe...")
-    tickers_600, original_portfolio = load_tickers()
+    # Fetch S&P 500 tickers and price data
+    print("\nFetching S&P 500 constituents...")
+    sp500_tickers = fetch_sp500_tickers()
+    print(f"S&P 500: {len(sp500_tickers)} tickers")
 
-    full_list = list(set(tickers_600 + list(original_portfolio.keys())))
-    print(f"Fetching prices for {len(full_list)} tickers...")
-    close_prices, open_prices = fetch_price_data(full_list, refresh=args.refresh)
+    print(f"Downloading price data ({args.period})...")
+    close_prices, open_prices = fetch_price_data(
+        sp500_tickers, period=args.period, refresh=args.refresh
+    )
 
-    # Filter tickers with sufficient history (>= 3 years)
-    min_len = 756  # ~3 years of trading days
+    # Filter tickers with sufficient history
+    min_days = 756  # ~3 years
     valid_tickers = [
-        t for t in close_prices.columns if len(close_prices[t].dropna()) >= min_len
+        t for t in close_prices.columns
+        if t != "SPY" and len(close_prices[t].dropna()) >= min_days
     ]
-    close_prices = close_prices[valid_tickers].ffill().bfill()
-    open_prices = open_prices[valid_tickers].ffill().bfill()
+    print(f"Tradable tickers with {min_days}+ days: {len(valid_tickers)}")
 
-    all_tickers = [t for t in valid_tickers if t != "SPY"]
-    print(f"Tradable tickers: {len(all_tickers)}")
+    # Run simulation
+    print("\nRunning simulation...")
+    equity, spy_equity = run_simulation(
+        close_prices, open_prices, valid_tickers, INITIAL_CAPITAL
+    )
 
-    if args.walk_forward:
-        # Walk-Forward Validation (production mode)
-        wfv_result = run_walk_forward(
-            close_prices,
-            open_prices,
-            all_tickers,
-            n_trials=args.n_trials,
-            metric=args.metric,
-        )
+    # Report
+    strat_metrics = compute_metrics(equity)
+    spy_metrics = compute_metrics(spy_equity)
 
-        save_wfv_report(wfv_result, metric=args.metric, output_dir=output_dir)
-        save_wfv_json(wfv_result, output_dir=output_dir)
-        save_equity_png(
-            wfv_result["oos_equity"],
-            output_dir,
-            title="Walk-Forward OOS Equity Curve",
-        )
+    print(f"\n{format_comparison_table(strat_metrics, spy_metrics)}")
 
-        # Print final OOS metrics
-        oos_metrics = compute_metrics(wfv_result["oos_equity"])
-        print(f"\n{format_metrics_table(oos_metrics)}")
-
-    else:
-        # Single run with default params
-        params = StrategyParams()
-        print(f"\nSingle run with default params: {params}")
-
-        # Use last ~3 years for simulation
-        lookback_buffer = params.lookback_period + 5
-        sim_len = min(756, len(close_prices) - lookback_buffer)
-        sim_start = close_prices.index[-sim_len]
-
-        sim_prices = close_prices.loc[sim_start:]
-        sim_open = open_prices.loc[sim_start:]
-
-        equity, gross_exp, net_exp, weights = run_simulation(
-            sim_prices,
-            sim_open,
-            close_prices,
-            all_tickers,
-            params,
-            INITIAL_CAPITAL,
-        )
-
-        eq_series = pd.Series(equity, index=sim_prices.index[: len(equity)])
-        net_exp_series = pd.Series(net_exp, index=sim_prices.index[: len(net_exp)])
-        save_equity_png(
-            eq_series, output_dir, title="Single Run Equity Curve",
-            net_exposures=net_exp_series,
-        )
-        metrics = compute_metrics(eq_series)
-        print(f"\n{format_metrics_table(metrics)}")
-
-        # Show holdings (long and short)
-        weight_series = pd.Series(weights, index=all_tickers)
-        longs = weight_series[weight_series > 0.001].sort_values(ascending=False)
-        shorts = weight_series[weight_series < -0.001].sort_values()
-
-        if not longs.empty:
-            print("\nLong Positions:")
-            for t, w in longs.head(10).items():
-                print(f"  {t}: {w:.1%}")
-        if not shorts.empty:
-            print("\nShort Positions:")
-            for t, w in shorts.head(10).items():
-                print(f"  {t}: {w:.1%}")
+    save_equity_png(equity, spy_equity, output_dir)
+    print(f"\nOutput saved to {output_dir}")
 
 
 if __name__ == "__main__":
