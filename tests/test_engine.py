@@ -148,7 +148,7 @@ def test_strict_slot_sizing_single_buy():
 
 
 def test_strict_slot_sizing_prevents_concentration():
-    """With 50% freed cash and 1 buy, position must still be ~5%, not 50%."""
+    """With freed cash and 1 buy, position must still be <= 1/TOP_N of equity."""
     shares = {"MSFT": 20.0}
     open_prices = pd.Series({"MSFT": 250.0, "GOOG": 100.0})
     equity_at_open = 10000.0
@@ -159,4 +159,3 @@ def test_strict_slot_sizing_prevents_concentration():
     max_slot = equity_at_open / TOP_N
     goog_value = shares["GOOG"] * 100.0
     assert goog_value <= max_slot * 1.01
-    assert goog_value < equity_at_open * 0.10

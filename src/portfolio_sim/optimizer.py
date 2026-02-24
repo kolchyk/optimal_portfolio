@@ -25,6 +25,12 @@ from src.portfolio_sim.reporting import compute_metrics
 log = structlog.get_logger()
 
 # ---------------------------------------------------------------------------
+# Shared data for worker processes (initializer pattern avoids repeated
+# pickling of large DataFrames — sent once per worker, not once per task).
+# ---------------------------------------------------------------------------
+_shared: dict = {}
+
+# ---------------------------------------------------------------------------
 # Default parameter search grid
 # ---------------------------------------------------------------------------
 DEFAULT_PARAM_GRID: dict[str, list] = {
@@ -136,29 +142,50 @@ def generate_folds(
 
 
 # ---------------------------------------------------------------------------
-# KAMA pre-computation
+# KAMA pre-computation (parallel)
 # ---------------------------------------------------------------------------
+def _init_kama_worker(close_prices: pd.DataFrame):
+    """Initializer for KAMA worker processes."""
+    _shared["close"] = close_prices
+
+
+def _compute_single_kama(args: tuple[int, str]) -> tuple[int, str, pd.Series]:
+    """Compute KAMA for a single (period, ticker) pair using shared data."""
+    period, ticker = args
+    series = _shared["close"][ticker].dropna()
+    return period, ticker, compute_kama_series(series, period=period)
+
+
 def precompute_kama_caches(
     close_prices: pd.DataFrame,
     tickers: list[str],
     kama_periods: list[int],
+    n_workers: int | None = None,
 ) -> dict[int, dict[str, pd.Series]]:
-    """Precompute KAMA series for all unique kama_period values.
+    """Precompute KAMA series for all unique kama_period values (parallel).
 
     Returns:
         {kama_period: {ticker: kama_series}}
     """
-    all_tickers = list(set(tickers + [SPY_TICKER]))
+    all_tickers = [t for t in set(tickers + [SPY_TICKER]) if t in close_prices.columns]
     unique_periods = sorted(set(kama_periods))
-    result: dict[int, dict[str, pd.Series]] = {}
-    for period in tqdm(unique_periods, desc="KAMA periods", unit="period"):
-        cache: dict[str, pd.Series] = {}
-        for t in tqdm(all_tickers, desc=f"  KAMA(period={period})", unit="ticker", leave=False):
-            if t in close_prices.columns:
-                cache[t] = compute_kama_series(
-                    close_prices[t].dropna(), period=period
-                )
-        result[period] = cache
+    n_workers = n_workers or max(1, os.cpu_count() - 1)
+
+    # Build all (period, ticker) tasks
+    tasks = [(p, t) for p in unique_periods for t in all_tickers]
+
+    result: dict[int, dict[str, pd.Series]] = {p: {} for p in unique_periods}
+
+    with ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=_init_kama_worker,
+        initargs=(close_prices,),
+    ) as executor:
+        futures = {executor.submit(_compute_single_kama, task): task for task in tasks}
+        for future in tqdm(as_completed(futures), total=len(tasks), desc="KAMA precompute", unit="series"):
+            period, ticker, kama_series = future.result()
+            result[period][ticker] = kama_series
+
     return result
 
 
@@ -210,27 +237,40 @@ def _run_on_window(
     return equity
 
 
-def _evaluate_params_on_is(
+def _init_fold_worker(
     close_prices: pd.DataFrame,
     open_prices: pd.DataFrame,
     tickers: list[str],
     initial_capital: float,
-    params: StrategyParams,
     is_dates: pd.DatetimeIndex,
     kama_caches: dict[int, dict[str, pd.Series]],
-    max_dd_limit: float,
-) -> float:
-    """Run simulation on IS window and return objective value."""
+):
+    """Initializer for fold grid-search workers — stores shared data."""
+    _shared["close"] = close_prices
+    _shared["open"] = open_prices
+    _shared["tickers"] = tickers
+    _shared["capital"] = initial_capital
+    _shared["is_dates"] = is_dates
+    _shared["kama_caches"] = kama_caches
+
+
+def _evaluate_params_task(args: tuple[StrategyParams, float]) -> tuple[StrategyParams, float]:
+    """Evaluate a single param set on the IS window using shared data.
+
+    Lightweight function — only the (params, max_dd_limit) tuple is pickled
+    per task; all heavy data lives in _shared (sent once per worker via initializer).
+    """
+    params, max_dd_limit = args
     try:
         equity = _run_on_window(
-            close_prices, open_prices, tickers, initial_capital,
-            params, is_dates, kama_caches,
+            _shared["close"], _shared["open"], _shared["tickers"],
+            _shared["capital"], params, _shared["is_dates"], _shared["kama_caches"],
         )
         if equity.empty:
-            return -999.0
-        return compute_objective(equity, max_dd_limit=max_dd_limit)
+            return params, -999.0
+        return params, compute_objective(equity, max_dd_limit=max_dd_limit)
     except (ValueError, KeyError):
-        return -999.0
+        return params, -999.0
 
 
 # ---------------------------------------------------------------------------
@@ -289,7 +329,7 @@ def run_walk_forward(
 
     # Pre-compute KAMA for all unique periods
     kama_periods = list(set(grid.get("kama_period", [20])))
-    kama_caches = precompute_kama_caches(close_prices, tickers, kama_periods)
+    kama_caches = precompute_kama_caches(close_prices, tickers, kama_periods, n_workers)
     log.info("kama_precomputed", n_periods=len(kama_caches))
 
     fold_results: list[FoldResult] = []
@@ -308,21 +348,18 @@ def run_walk_forward(
             oos_range=f"{oos_dates[0].date()}..{oos_dates[-1].date()}",
         )
 
-        # --- Evaluate all params on IS (parallel) ---
+        # --- Evaluate all params on IS (parallel, initializer pattern) ---
         is_results: dict[StrategyParams, float] = {}
 
-        with ProcessPoolExecutor(max_workers=n_workers) as executor:
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            initializer=_init_fold_worker,
+            initargs=(close_prices, open_prices, tickers,
+                      initial_capital, is_dates, kama_caches),
+        ) as executor:
             futures = {
                 executor.submit(
-                    _evaluate_params_on_is,
-                    close_prices,
-                    open_prices,
-                    tickers,
-                    initial_capital,
-                    p,
-                    is_dates,
-                    kama_caches,
-                    config.max_drawdown_limit,
+                    _evaluate_params_task, (p, config.max_drawdown_limit),
                 ): p
                 for p in all_params
             }
@@ -334,8 +371,8 @@ def run_walk_forward(
                 leave=False,
             )
             for future in grid_bar:
-                p = futures[future]
-                is_results[p] = future.result()
+                p, obj = future.result()
+                is_results[p] = obj
 
         # --- Pick best IS params ---
         best_params = max(is_results, key=is_results.get)  # type: ignore[arg-type]

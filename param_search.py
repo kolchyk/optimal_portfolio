@@ -1,18 +1,37 @@
 """Parameter grid search for maximizing 3-year profitability ratio vs SPY."""
 
-import pandas as pd
+import os
 import itertools
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
+
+import pandas as pd
+from tqdm import tqdm
 
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics
 
+# ---------------------------------------------------------------------------
+# Shared data for worker processes (initializer pattern avoids repeated
+# pickling of large DataFrames — sent once per worker, not once per task).
+# ---------------------------------------------------------------------------
+_shared: dict = {}
 
-def evaluate_params(args):
-    """Evaluate a single parameter combination."""
-    close, opn, valid, kp, lb, tn, buf = args
+
+def _init_worker(close: pd.DataFrame, opn: pd.DataFrame, tickers: list[str]):
+    """Initializer for each worker process — stores shared data globally."""
+    _shared["close"] = close
+    _shared["open"] = opn
+    _shared["tickers"] = tickers
+
+
+def _evaluate_single(combo: tuple) -> dict:
+    """Evaluate a single parameter combination using shared data."""
+    kp, lb, tn, buf = combo
+    close = _shared["close"]
+    opn = _shared["open"]
+    valid = _shared["tickers"]
     params = StrategyParams(
         kama_period=kp, lookback_period=lb, top_n=tn, kama_buffer=buf,
     )
@@ -66,19 +85,21 @@ def run_grid_search():
         grid["kama_period"], grid["lookback_period"],
         grid["top_n"], grid["kama_buffer"],
     ))
-    print(f"Testing {len(combos)} combinations...")
+    n_combos = len(combos)
+    n_workers = max(1, os.cpu_count() - 1)
+    print(f"Testing {n_combos} combinations on {n_workers} workers...")
 
     results = []
     t0 = time.time()
 
-    for i, (kp, lb, tn, buf) in enumerate(combos):
-        r = evaluate_params((close, opn, valid, kp, lb, tn, buf))
-        results.append(r)
-        if (i + 1) % 50 == 0:
-            elapsed = time.time() - t0
-            best_so_far = max(results, key=lambda x: x.get("ratio", -1))
-            print(f"  [{i+1}/{len(combos)}] elapsed={elapsed:.0f}s  "
-                  f"best_ratio={best_so_far.get('ratio', -1):.2f}x")
+    with ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=_init_worker,
+        initargs=(close, opn, valid),
+    ) as executor:
+        futures = {executor.submit(_evaluate_single, c): c for c in combos}
+        for future in tqdm(as_completed(futures), total=n_combos, desc="Grid search", unit="combo"):
+            results.append(future.result())
 
     elapsed = time.time() - t0
     print(f"\nTotal time: {elapsed:.0f}s")

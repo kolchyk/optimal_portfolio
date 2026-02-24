@@ -14,12 +14,12 @@ SLIPPAGE_RATE: float = 0.0005  # 5 bps (0.05%)
 RISK_FREE_RATE: float = 0.04
 
 # ---------------------------------------------------------------------------
-# Strategy parameters (fixed — no optimization)
+# Strategy parameters — concentrated momentum (4x S&P 500 target)
 # ---------------------------------------------------------------------------
-KAMA_PERIOD: int = 20  # 1 trading month
-LOOKBACK_PERIOD: int = 60  # 1 quarter momentum
-TOP_N: int = 20  # 20 stocks, ~5% each
-KAMA_BUFFER: float = 0.01  # 1% hysteresis buffer
+KAMA_PERIOD: int = 10  # Fast adaptive MA (~2 trading weeks)
+LOOKBACK_PERIOD: int = 150  # ~6-month momentum window
+TOP_N: int = 5  # 5 stocks, ~20% each — concentrated momentum
+KAMA_BUFFER: float = 0.008  # 0.8% hysteresis buffer
 
 # ---------------------------------------------------------------------------
 # Tickers

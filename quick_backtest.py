@@ -7,6 +7,13 @@ import pandas as pd
 import numpy as np
 import time
 
+from src.portfolio_sim.config import (
+    INITIAL_CAPITAL,
+    KAMA_BUFFER,
+    KAMA_PERIOD,
+    LOOKBACK_PERIOD,
+    TOP_N,
+)
 from src.portfolio_sim.data import fetch_price_data, fetch_sp500_tickers
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.params import StrategyParams
@@ -14,11 +21,11 @@ from src.portfolio_sim.reporting import compute_metrics
 
 
 def run_quick_backtest(
-    kama_period: int = 20,
-    lookback_period: int = 60,
-    top_n: int = 20,
-    kama_buffer: float = 0.01,
-    initial_capital: float = 10_000,
+    kama_period: int = KAMA_PERIOD,
+    lookback_period: int = LOOKBACK_PERIOD,
+    top_n: int = TOP_N,
+    kama_buffer: float = KAMA_BUFFER,
+    initial_capital: float = INITIAL_CAPITAL,
     verbose: bool = True,
 ) -> dict:
     """Run backtest and return metrics for strategy and SPY over last 3 years."""

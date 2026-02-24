@@ -506,14 +506,20 @@ def _render_sidebar() -> dict:
             "Initial Capital ($)", min_value=1_000.0, max_value=10_000_000.0,
             value=float(INITIAL_CAPITAL), step=1_000.0,
         )
-        top_n = st.slider("Top N Stocks", min_value=5, max_value=50, value=TOP_N)
+        top_n = st.slider("Top N Stocks", min_value=3, max_value=50, value=TOP_N)
         kama_period = st.slider("KAMA Period", min_value=5, max_value=50, value=KAMA_PERIOD)
         lookback_period = st.slider(
-            "Lookback Period", min_value=20, max_value=120, value=LOOKBACK_PERIOD
+            "Lookback Period", min_value=20, max_value=252, value=LOOKBACK_PERIOD
         )
         kama_buffer = st.slider(
             "KAMA Buffer", min_value=0.0, max_value=0.05,
-            value=float(KAMA_BUFFER), step=0.005, format="%.3f",
+            value=float(KAMA_BUFFER), step=0.001, format="%.3f",
+        )
+        use_risk_adjusted = st.checkbox(
+            "Risk-Adjusted Momentum",
+            value=False,
+            help="Rank by return/volatility instead of raw return. "
+                 "Prefers smooth uptrends but may miss volatile winners.",
         )
 
         st.markdown("---")
@@ -549,6 +555,7 @@ def _render_sidebar() -> dict:
         "kama_period": kama_period,
         "lookback_period": lookback_period,
         "kama_buffer": kama_buffer,
+        "use_risk_adjusted": use_risk_adjusted,
         "selected_tickers": selected_tickers,
         "run_clicked": run_clicked,
     }
@@ -591,6 +598,7 @@ def main():
             lookback_period=sidebar["lookback_period"],
             top_n=sidebar["top_n"],
             kama_buffer=sidebar["kama_buffer"],
+            use_risk_adjusted=sidebar["use_risk_adjusted"],
         )
 
         with st.spinner(f"Running simulation on {len(valid)} tickers..."):

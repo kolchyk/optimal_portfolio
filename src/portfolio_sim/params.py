@@ -22,6 +22,7 @@ class StrategyParams:
     lookback_period: int = LOOKBACK_PERIOD
     top_n: int = TOP_N
     kama_buffer: float = KAMA_BUFFER
+    use_risk_adjusted: bool = False
 
     @property
     def warmup(self) -> int:

@@ -2,7 +2,8 @@
 
 Selects buy candidates from the universe based on:
   1. KAMA trend filter: keep stocks where Close > KAMA * (1 + KAMA_BUFFER).
-  2. Momentum ranking: sort by LOOKBACK_PERIOD-day return, take top N.
+  2. Risk-adjusted momentum ranking: sort by return/volatility (Sharpe-like
+     momentum), take top N.  This prefers strong AND smooth uptrends.
 
 Does NOT dictate weights — sizing is handled by the engine.
 """
@@ -19,6 +20,7 @@ def get_buy_candidates(
     kama_values: dict[str, float],
     kama_buffer: float = KAMA_BUFFER,
     top_n: int = TOP_N,
+    use_risk_adjusted: bool = True,
 ) -> list[str]:
     """Return an ordered list of top-momentum tickers passing the KAMA filter.
 
@@ -29,9 +31,11 @@ def get_buy_candidates(
         kama_values: {ticker: current_kama_value} for KAMA filter.
         kama_buffer: hysteresis buffer for KAMA filter (default from config).
         top_n: maximum number of candidates to return (default from config).
+        use_risk_adjusted: if True, rank by return/volatility instead of raw
+                           return.  Prefers smooth uptrends.
 
     Returns:
-        List of up to *top_n* ticker symbols, ranked by descending momentum.
+        List of up to *top_n* ticker symbols, ranked by descending score.
         Empty list when no candidates pass both filters.
     """
     candidates = []
@@ -49,19 +53,28 @@ def get_buy_candidates(
     if not candidates:
         return []
 
-    momentum: dict[str, float] = {}
+    scores: dict[str, float] = {}
     for t in candidates:
-        close_now = prices_window[t].iloc[-1]
-        close_past = prices_window[t].iloc[0]
+        series = prices_window[t].dropna()
+        if len(series) < 5:
+            continue
+        close_now = series.iloc[-1]
+        close_past = series.iloc[0]
         if np.isnan(close_past) or close_past <= 1e-8:
-            momentum[t] = 0.0
+            continue
+        raw_return = close_now / close_past - 1.0
+        if raw_return <= 0:
+            continue
+
+        if use_risk_adjusted:
+            daily_returns = series.pct_change().dropna()
+            vol = daily_returns.std()
+            if vol > 1e-8:
+                scores[t] = raw_return / vol
+            else:
+                scores[t] = raw_return
         else:
-            momentum[t] = close_now / close_past - 1.0
+            scores[t] = raw_return
 
-    ranked = sorted(
-        [(t, m) for t, m in momentum.items() if m > 0],
-        key=lambda x: x[1],
-        reverse=True,
-    )
-
+    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
     return [t for t, _ in ranked[:top_n]]
