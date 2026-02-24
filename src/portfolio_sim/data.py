@@ -1,12 +1,10 @@
-"""Data loading: ticker universe from JSON, price fetching via yfinance, Parquet cache."""
-
-import json
+"""Data loading: S&P 500 tickers from Wikipedia, price fetching via yfinance, Parquet cache."""
 
 import pandas as pd
 import structlog
 import yfinance as yf
 
-from src.portfolio_sim.config import CACHE_DIR, SAFE_HAVEN_TICKER, TICKERS_JSON_PATH
+from src.portfolio_sim.config import CACHE_DIR, SPY_TICKER
 
 log = structlog.get_logger(__name__)
 
@@ -14,22 +12,23 @@ CLOSE_CACHE = CACHE_DIR / "close_prices.parquet"
 OPEN_CACHE = CACHE_DIR / "open_prices.parquet"
 
 
-def load_tickers(path=TICKERS_JSON_PATH) -> tuple[list[str], dict]:
-    """Load ticker universe from JSON.
+def fetch_sp500_tickers() -> list[str]:
+    """Fetch current S&P 500 constituent tickers from Wikipedia.
 
-    Returns:
-        (tickers_list, original_portfolio_dict)
+    Returns sorted list of ticker symbols. Dots in symbols (e.g. BRK.B)
+    are replaced with hyphens for yfinance compatibility.
     """
-    with open(path) as f:
-        data = json.load(f)
-    tickers = list(set(data.get("tickers_600", [])))
-    original_portfolio = data.get("original_portfolio", {})
-    return tickers, original_portfolio
+    url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+    tables = pd.read_html(url)
+    df = tables[0]
+    tickers = df["Symbol"].str.replace(".", "-", regex=False).tolist()
+    log.info("Fetched S&P 500 constituents", n_tickers=len(tickers))
+    return sorted(tickers)
 
 
 def fetch_price_data(
     tickers: list[str],
-    period: str = "5y",
+    period: str = "15y",
     refresh: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fetch Close and Open prices for all tickers.
@@ -43,13 +42,11 @@ def fetch_price_data(
         open_df = pd.read_parquet(OPEN_CACHE)
         return close_df, open_df
 
-    # Ensure SPY and SHV are included
-    full_list = list(set(tickers + ["SPY", SAFE_HAVEN_TICKER]))
+    full_list = list(set(tickers + [SPY_TICKER]))
     log.info("Downloading prices via yfinance", n_tickers=len(full_list), period=period)
 
     close_df, open_df = _download_from_yfinance(full_list, period)
 
-    # Save to cache
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     close_df.to_parquet(CLOSE_CACHE)
     open_df.to_parquet(OPEN_CACHE)
@@ -71,20 +68,16 @@ def _download_from_yfinance(
         progress=True,
     )
 
-    # yfinance returns MultiIndex columns (ticker, field) when multiple tickers
     if isinstance(raw.columns, pd.MultiIndex):
         close_df = raw.xs("Close", axis=1, level=1) if "Close" in raw.columns.get_level_values(1) else pd.DataFrame()
         open_df = raw.xs("Open", axis=1, level=1) if "Open" in raw.columns.get_level_values(1) else pd.DataFrame()
     else:
-        # Single ticker fallback
         close_df = raw[["Close"]].rename(columns={"Close": tickers[0]})
         open_df = raw[["Open"]].rename(columns={"Open": tickers[0]})
 
-    # Clean up
     close_df = close_df.ffill().dropna(axis=1, how="all")
     open_df = open_df[close_df.columns].ffill().bfill()
 
-    # Ensure timezone-naive DatetimeIndex
     if close_df.index.tz is not None:
         close_df.index = close_df.index.tz_localize(None)
         open_df.index = open_df.index.tz_localize(None)

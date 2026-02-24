@@ -27,14 +27,13 @@ def objective(
 ) -> float:
     """Optuna objective: maximize the chosen metric."""
     params = StrategyParams(
-        kama_period=trial.suggest_int("kama_period", 10, 40, step=10),
-        lookback_period=trial.suggest_int("lookback_period", 63, 126, step=21),
-        max_correlation=trial.suggest_float("max_correlation", 0.5, 0.9, step=0.1),
-        top_n_selection=trial.suggest_int("top_n_selection", 10, 25, step=5),
+        kama_period=trial.suggest_int("kama_period", 5, 21, step=2),
+        lookback_period=trial.suggest_int("lookback_period", 10, 40, step=5),
+        top_n_selection=trial.suggest_int("top_n_selection", 5, 20, step=5),
     )
 
     try:
-        equity, _, _ = run_simulation(
+        equity, _, _, _ = run_simulation(
             sim_prices, sim_open, full_prices, tickers, params, INITIAL_CAPITAL
         )
 

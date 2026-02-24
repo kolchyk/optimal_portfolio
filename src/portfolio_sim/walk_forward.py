@@ -1,7 +1,7 @@
 """Walk-Forward Validation orchestrator.
 
 WFV is the only production mode for evaluating strategy performance.
-Train on 1 year, test (blind) on 1 quarter, slide forward by 1 quarter.
+Train on 1 quarter, test (blind) on 1 month, slide forward by 1 month.
 """
 
 import pandas as pd
@@ -112,7 +112,7 @@ def run_walk_forward(
         print(f"  IS best score: {is_score:.4f}")
 
         # IS equity (train data with best params)
-        is_eq, _, _ = run_simulation(
+        is_eq, _, _, _ = run_simulation(
             sim_train,
             sim_train_open,
             full_for_train,
@@ -127,7 +127,7 @@ def run_walk_forward(
         sim_test_open = open_prices.iloc[test_start:test_end]
         full_for_test = prices.iloc[:test_end]
 
-        oos_eq, _, _ = run_simulation(
+        oos_eq, _, _, _ = run_simulation(
             sim_test,
             sim_test_open,
             full_for_test,
@@ -160,7 +160,6 @@ def run_walk_forward(
                 "params": {
                     "kama_period": best_params.kama_period,
                     "lookback_period": best_params.lookback_period,
-                    "max_correlation": best_params.max_correlation,
                     "top_n_selection": best_params.top_n_selection,
                 },
                 "is_score": is_score,

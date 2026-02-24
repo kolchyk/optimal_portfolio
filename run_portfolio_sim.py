@@ -130,7 +130,7 @@ def main():
         sim_prices = close_prices.loc[sim_start:]
         sim_open = open_prices.loc[sim_start:]
 
-        equity, exposures, weights = run_simulation(
+        equity, gross_exp, net_exp, weights = run_simulation(
             sim_prices,
             sim_open,
             close_prices,
@@ -140,16 +140,26 @@ def main():
         )
 
         eq_series = pd.Series(equity, index=sim_prices.index[: len(equity)])
-        save_equity_png(eq_series, output_dir, title="Single Run Equity Curve")
+        net_exp_series = pd.Series(net_exp, index=sim_prices.index[: len(net_exp)])
+        save_equity_png(
+            eq_series, output_dir, title="Single Run Equity Curve",
+            net_exposures=net_exp_series,
+        )
         metrics = compute_metrics(eq_series)
         print(f"\n{format_metrics_table(metrics)}")
 
-        # Show top holdings
+        # Show holdings (long and short)
         weight_series = pd.Series(weights, index=all_tickers)
-        top = weight_series[weight_series > 0].sort_values(ascending=False).head(10)
-        if not top.empty:
-            print("\nTop Holdings:")
-            for t, w in top.items():
+        longs = weight_series[weight_series > 0.001].sort_values(ascending=False)
+        shorts = weight_series[weight_series < -0.001].sort_values()
+
+        if not longs.empty:
+            print("\nLong Positions:")
+            for t, w in longs.head(10).items():
+                print(f"  {t}: {w:.1%}")
+        if not shorts.empty:
+            print("\nShort Positions:")
+            for t, w in shorts.head(10).items():
                 print(f"  {t}: {w:.1%}")
 
 

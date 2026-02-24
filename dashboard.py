@@ -73,22 +73,18 @@ def render_sidebar():
     st.sidebar.markdown("---")
     st.sidebar.subheader("Strategy Parameters")
     kama_period = st.sidebar.select_slider(
-        "KAMA Period", options=[10, 20, 30, 40], value=20
+        "KAMA Period", options=list(range(5, 22, 2)), value=10
     )
     lookback_period = st.sidebar.select_slider(
-        "Lookback Period", options=[63, 84, 105, 126], value=126
-    )
-    max_correlation = st.sidebar.slider(
-        "Max Correlation", min_value=0.5, max_value=0.9, value=0.7, step=0.1
+        "Lookback Period", options=list(range(10, 43, 5)), value=21
     )
     top_n_selection = st.sidebar.select_slider(
-        "Top N Selection", options=[10, 15, 20, 25], value=15
+        "Top N Selection", options=list(range(5, 21, 5)), value=10
     )
 
     params = StrategyParams(
         kama_period=kama_period,
         lookback_period=lookback_period,
-        max_correlation=max_correlation,
         top_n_selection=top_n_selection,
     )
 
@@ -186,30 +182,55 @@ def plot_wfv_window_returns(windows: list[dict]) -> go.Figure:
     return fig
 
 
-def plot_holdings_pie(weights: np.ndarray, tickers: list[str]) -> go.Figure:
+def plot_holdings_bar(weights: np.ndarray, tickers: list[str]) -> go.Figure:
     weight_s = pd.Series(weights, index=tickers)
-    active = weight_s[weight_s > 0.001].sort_values(ascending=False)
+    active = weight_s[weight_s.abs() > 0.001].sort_values()
 
     if active.empty:
         fig = go.Figure()
         fig.add_annotation(text="No active holdings", showarrow=False)
         return fig
 
+    colors = ["#2ecc71" if w > 0 else "#e74c3c" for w in active.values]
     fig = go.Figure(
-        data=[
-            go.Pie(
-                labels=active.index.tolist(),
-                values=(active.values * 100).tolist(),
-                textinfo="label+percent",
-                hole=0.3,
-            )
-        ]
+        go.Bar(
+            x=active.values * 100,
+            y=active.index,
+            orientation="h",
+            marker_color=colors,
+        )
     )
     fig.update_layout(
-        title="Portfolio Allocation",
+        title="Portfolio Allocation (Long/Short)",
+        xaxis_title="Weight (%)",
         template="plotly_white",
-        height=400,
-        margin=dict(l=20, r=20, t=40, b=20),
+        height=max(300, len(active) * 25 + 100),
+        margin=dict(l=80, r=20, t=40, b=40),
+    )
+    return fig
+
+
+def plot_net_exposure(net_exp: pd.Series) -> go.Figure:
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=net_exp.index,
+            y=net_exp.values * 100,
+            mode="lines",
+            name="Net Exposure",
+            line=dict(color="#3498db", width=1.5),
+            fill="tozeroy",
+            fillcolor="rgba(52, 152, 219, 0.15)",
+        )
+    )
+    fig.add_hline(y=0, line_dash="dash", line_color="gray")
+    fig.update_layout(
+        title="Net Exposure (Market Breathing)",
+        xaxis_title="Date",
+        yaxis_title="Net Exposure (%)",
+        template="plotly_white",
+        height=250,
+        margin=dict(l=50, r=20, t=40, b=40),
     )
     return fig
 
@@ -217,8 +238,12 @@ def plot_holdings_pie(weights: np.ndarray, tickers: list[str]) -> go.Figure:
 # ---------------------------------------------------------------------------
 # Metric cards
 # ---------------------------------------------------------------------------
-def render_metric_cards(metrics: dict):
-    c1, c2, c3, c4 = st.columns(4)
+def render_metric_cards(metrics: dict, avg_net_exp: float | None = None):
+    if avg_net_exp is not None:
+        c1, c2, c3, c4, c5 = st.columns(5)
+        c5.metric("Avg Net Exp", f"{avg_net_exp:.1%}")
+    else:
+        c1, c2, c3, c4 = st.columns(4)
     c1.metric("CAGR", f"{metrics['cagr']:.1%}")
     c2.metric("Max Drawdown", f"{-metrics['max_drawdown']:.1%}")
     c3.metric("Sharpe", f"{metrics['sharpe']:.2f}")
@@ -274,7 +299,7 @@ def main():
                 sim_prices = close_prices.loc[sim_start:]
                 sim_open = open_prices.loc[sim_start:]
 
-                equity, exposures, weights = run_simulation(
+                equity, gross_exp, net_exp, weights = run_simulation(
                     sim_prices,
                     sim_open,
                     close_prices,
@@ -286,7 +311,11 @@ def main():
             eq_series = pd.Series(
                 equity, index=sim_prices.index[: len(equity)]
             )
+            net_exp_series = pd.Series(
+                net_exp, index=sim_prices.index[: len(net_exp)]
+            )
             st.session_state["equity"] = eq_series
+            st.session_state["net_exposures"] = net_exp_series
             st.session_state["weights"] = weights
             st.session_state["tickers"] = all_tickers
             st.session_state["mode"] = "single"
@@ -306,28 +335,35 @@ def _render_single_run():
     equity = st.session_state["equity"]
     weights = st.session_state["weights"]
     tickers = st.session_state["tickers"]
+    net_exp = st.session_state.get("net_exposures", pd.Series(dtype=float))
     metrics = compute_metrics(equity)
 
+    avg_net = float(net_exp.mean()) if not net_exp.empty else None
     tab_perf, tab_holdings = st.tabs(["Performance", "Portfolio"])
 
     with tab_perf:
-        render_metric_cards(metrics)
+        render_metric_cards(metrics, avg_net_exp=avg_net)
         st.plotly_chart(plot_equity_curve(equity), use_container_width=True)
         st.plotly_chart(plot_drawdown(equity), use_container_width=True)
+        if not net_exp.empty:
+            st.plotly_chart(plot_net_exposure(net_exp), use_container_width=True)
 
     with tab_holdings:
         col1, col2 = st.columns(2)
         with col1:
             st.plotly_chart(
-                plot_holdings_pie(weights, tickers), use_container_width=True
+                plot_holdings_bar(weights, tickers), use_container_width=True
             )
         with col2:
             weight_s = pd.Series(weights, index=tickers)
-            active = weight_s[weight_s > 0.001].sort_values(ascending=False)
+            active = weight_s[weight_s.abs() > 0.001].sort_values(
+                key=lambda x: x.abs(), ascending=False
+            )
             if not active.empty:
                 df = pd.DataFrame(
                     {"Ticker": active.index, "Weight": active.values}
                 )
+                df["Side"] = df["Weight"].map(lambda w: "LONG" if w > 0 else "SHORT")
                 df["Weight"] = df["Weight"].map("{:.1%}".format)
                 st.dataframe(df, hide_index=True, use_container_width=True)
             else:

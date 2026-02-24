@@ -77,12 +77,24 @@ def format_metrics_table(metrics: dict) -> str:
 
 
 def save_equity_png(
-    equity: pd.Series, output_dir: Path, title: str = "Equity Curve"
+    equity: pd.Series,
+    output_dir: Path,
+    title: str = "Equity Curve",
+    net_exposures: pd.Series | None = None,
 ) -> Path:
-    """Save equity curve + drawdown chart as PNG. Returns path."""
-    fig, (ax1, ax2) = plt.subplots(
-        2, 1, figsize=(14, 8), gridspec_kw={"height_ratios": [3, 1]}, sharex=True
-    )
+    """Save equity curve + drawdown (+ optional net exposure) chart as PNG."""
+    if net_exposures is not None and not net_exposures.empty:
+        fig, (ax1, ax2, ax3) = plt.subplots(
+            3, 1, figsize=(14, 10),
+            gridspec_kw={"height_ratios": [3, 1, 1]}, sharex=True,
+        )
+    else:
+        fig, (ax1, ax2) = plt.subplots(
+            2, 1, figsize=(14, 8),
+            gridspec_kw={"height_ratios": [3, 1]}, sharex=True,
+        )
+        ax3 = None
+
     fig.suptitle(title, fontsize=14, fontweight="bold")
 
     # Equity curve
@@ -97,9 +109,21 @@ def save_equity_png(
     ax2.fill_between(dd.index, dd.values * 100, color="#e74c3c", alpha=0.5)
     ax2.plot(dd.index, dd.values * 100, color="#e74c3c", linewidth=0.8)
     ax2.set_ylabel("Drawdown (%)")
-    ax2.set_xlabel("Date")
     ax2.grid(True, alpha=0.3)
     ax2.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+
+    # Net Exposure
+    if ax3 is not None and net_exposures is not None:
+        colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in net_exposures.values]
+        ax3.bar(net_exposures.index, net_exposures.values * 100,
+                color=colors, width=1.5, alpha=0.7)
+        ax3.axhline(y=0, color="gray", linewidth=0.5, linestyle="--")
+        ax3.set_ylabel("Net Exp (%)")
+        ax3.set_xlabel("Date")
+        ax3.grid(True, alpha=0.3)
+        ax3.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, _: f"{x:.0f}%"))
+    else:
+        ax2.set_xlabel("Date")
 
     # Metrics annotation
     metrics = compute_metrics(equity)
