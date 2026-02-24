@@ -13,6 +13,7 @@ Key design decisions that prevent capital destruction:
 
 import numpy as np
 import pandas as pd
+from tqdm import tqdm
 
 from src.portfolio_sim.alpha import get_buy_candidates
 from src.portfolio_sim.config import (
@@ -34,6 +35,7 @@ def run_simulation(
     initial_capital: float,
     params: StrategyParams | None = None,
     kama_cache: dict[str, pd.Series] | None = None,
+    show_progress: bool = False,
 ) -> SimulationResult:
     """Run a full bar-by-bar portfolio simulation.
 
@@ -56,7 +58,9 @@ def run_simulation(
     # ------------------------------------------------------------------
     if kama_cache is None:
         kama_cache = {}
-        for t in list(set(tickers + [SPY_TICKER])):
+        all_tickers = list(set(tickers + [SPY_TICKER]))
+        ticker_iter = tqdm(all_tickers, desc="Computing KAMA", unit="ticker") if show_progress else all_tickers
+        for t in ticker_iter:
             if t in close_prices.columns:
                 kama_cache[t] = compute_kama_series(
                     close_prices[t].dropna(), period=p.kama_period
@@ -93,7 +97,8 @@ def run_simulation(
     # ------------------------------------------------------------------
     # 3. Day-by-day loop
     # ------------------------------------------------------------------
-    for i, date in enumerate(sim_dates):
+    date_iter = tqdm(sim_dates, desc="Simulating", unit="day") if show_progress else sim_dates
+    for i, date in enumerate(date_iter):
         daily_close = close_prices.loc[date]
         daily_open = open_prices.loc[date]
 

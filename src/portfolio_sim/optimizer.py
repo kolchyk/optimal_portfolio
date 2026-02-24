@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 import numpy as np
 import pandas as pd
 import structlog
+from tqdm import tqdm
 
 from src.portfolio_sim.config import INITIAL_CAPITAL, SPY_TICKER
 from src.portfolio_sim.engine import run_simulation
@@ -148,10 +149,11 @@ def precompute_kama_caches(
         {kama_period: {ticker: kama_series}}
     """
     all_tickers = list(set(tickers + [SPY_TICKER]))
+    unique_periods = sorted(set(kama_periods))
     result: dict[int, dict[str, pd.Series]] = {}
-    for period in sorted(set(kama_periods)):
+    for period in tqdm(unique_periods, desc="KAMA periods", unit="period"):
         cache: dict[str, pd.Series] = {}
-        for t in all_tickers:
+        for t in tqdm(all_tickers, desc=f"  KAMA(period={period})", unit="ticker", leave=False):
             if t in close_prices.columns:
                 cache[t] = compute_kama_series(
                     close_prices[t].dropna(), period=period
@@ -198,10 +200,11 @@ def _run_on_window(
         close_prices, open_prices, window_dates, warmup
     )
     kama_cache = kama_caches.get(params.kama_period)
-    equity, _ = run_simulation(
+    result = run_simulation(
         close_slice, open_slice, tickers, initial_capital,
         params=params, kama_cache=kama_cache,
     )
+    equity = result.equity
     # Trim to only the window dates (exclude warmup equity values)
     equity = equity.loc[equity.index.isin(window_dates)]
     return equity
@@ -291,7 +294,12 @@ def run_walk_forward(
 
     fold_results: list[FoldResult] = []
 
-    for fold_idx, (is_dates, oos_dates) in enumerate(folds):
+    fold_bar = tqdm(enumerate(folds), total=len(folds), desc="Walk-forward folds", unit="fold")
+    for fold_idx, (is_dates, oos_dates) in fold_bar:
+        fold_bar.set_postfix(
+            IS=f"{is_dates[0].date()}..{is_dates[-1].date()}",
+            OOS=f"{oos_dates[0].date()}..{oos_dates[-1].date()}",
+        )
         log.info(
             "fold_start",
             fold=fold_idx + 1,
@@ -318,7 +326,14 @@ def run_walk_forward(
                 ): p
                 for p in all_params
             }
-            for future in as_completed(futures):
+            grid_bar = tqdm(
+                as_completed(futures),
+                total=len(all_params),
+                desc=f"  Fold {fold_idx + 1}/{len(folds)} grid search",
+                unit="combo",
+                leave=False,
+            )
+            for future in grid_bar:
                 p = futures[future]
                 is_results[p] = future.result()
 

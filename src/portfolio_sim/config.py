@@ -9,8 +9,8 @@ from pathlib import Path
 # Trading costs
 # ---------------------------------------------------------------------------
 INITIAL_CAPITAL: float = 10_000
-COMMISSION_RATE: float = 0.001  # 0.1% per trade
-SLIPPAGE_RATE: float = 0.0015  # 15 bps market impact
+COMMISSION_RATE: float = 0.0002  # 2 bps (0.02%), Interactive Brokers-like
+SLIPPAGE_RATE: float = 0.0005  # 5 bps (0.05%)
 RISK_FREE_RATE: float = 0.04
 
 # ---------------------------------------------------------------------------

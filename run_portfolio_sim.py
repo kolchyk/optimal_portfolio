@@ -91,7 +91,8 @@ def main():
     # Run simulation
     print("\nRunning simulation...")
     result = run_simulation(
-        close_prices, open_prices, valid_tickers, INITIAL_CAPITAL
+        close_prices, open_prices, valid_tickers, INITIAL_CAPITAL,
+        show_progress=True,
     )
 
     # Report

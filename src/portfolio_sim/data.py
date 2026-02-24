@@ -10,6 +10,7 @@ import pandas as pd
 import structlog
 import yfinance as yf
 from pathlib import Path
+from tqdm import tqdm
 
 from src.portfolio_sim.config import CACHE_DIR, SPY_TICKER
 
@@ -85,14 +86,10 @@ def _download_from_yfinance(
     all_open = []
 
     # Process in batches
-    for i in range(0, len(tickers), batch_size):
+    n_batches = (len(tickers) + batch_size - 1) // batch_size
+    for batch_idx in tqdm(range(n_batches), desc="Downloading batches", unit="batch"):
+        i = batch_idx * batch_size
         batch_tickers = tickers[i : i + batch_size]
-        log.info(
-            "Downloading batch",
-            current=i // batch_size + 1,
-            total=(len(tickers) + batch_size - 1) // batch_size,
-            n_tickers=len(batch_tickers),
-        )
 
         raw = yf.download(
             batch_tickers,
