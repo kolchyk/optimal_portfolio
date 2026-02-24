@@ -54,10 +54,10 @@ def compute_target_weights(
     for t in candidates:
         close_now = prices_window[t].iloc[-1]
         close_past = prices_window[t].iloc[0]
-        if close_past > 1e-8:
-            momentum[t] = close_now / close_past - 1.0
-        else:
+        if np.isnan(close_past) or close_past <= 1e-8:
             momentum[t] = 0.0
+        else:
+            momentum[t] = close_now / close_past - 1.0
 
     # Keep only positive momentum, sort descending, take top N
     ranked = sorted(

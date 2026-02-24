@@ -4,6 +4,7 @@ Usage:
     python run_portfolio_sim.py
     python run_portfolio_sim.py --refresh
     python run_portfolio_sim.py --period 10y
+    python run_portfolio_sim.py --cache-only --refresh   # Download & save to cache, skip sim
 """
 
 import argparse
@@ -32,8 +33,12 @@ def parse_args() -> argparse.Namespace:
         help="Force refresh data cache from yfinance",
     )
     parser.add_argument(
-        "--period", default="15y",
-        help="yfinance period string (default: 15y)",
+        "--period", default="5y",
+        help="yfinance period string (default: 5y)",
+    )
+    parser.add_argument(
+        "--cache-only", action="store_true",
+        help="Only fetch data and save to cache; skip simulation. Use with --refresh to populate cache.",
     )
     return parser.parse_args()
 
@@ -62,10 +67,18 @@ def main():
     sp500_tickers = fetch_sp500_tickers()
     print(f"S&P 500: {len(sp500_tickers)} tickers")
 
-    print(f"Downloading price data ({args.period})...")
+    if args.cache_only:
+        print(f"Downloading price data ({args.period}) and saving to cache...")
+    else:
+        print(f"Downloading price data ({args.period})...")
     close_prices, open_prices = fetch_price_data(
-        sp500_tickers, period=args.period, refresh=args.refresh
+        sp500_tickers, period=args.period, refresh=args.refresh or args.cache_only
     )
+
+    if args.cache_only:
+        print(f"Cache saved. {len(close_prices.columns)} tickers in output/cache/.")
+        print("Future runs will load from cache (no download) unless you use --refresh.")
+        return
 
     # Filter tickers with sufficient history
     min_days = 756  # ~3 years

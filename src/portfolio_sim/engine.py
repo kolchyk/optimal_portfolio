@@ -206,11 +206,9 @@ def _execute_trades(
                 total_cost += trade_value * COST_RATE
                 cash += trade_value
             del shares[t]
-        return equity_at_open - sum(s * open_prices.get(t, 0.0) for t, s in shares.items()) - total_cost + cash
-        # Simplified: everything is sold, cash = equity - costs
+        return equity_at_open - total_cost
 
     # Partial trades: sell some, buy some
-    freed_cash = 0.0
 
     # First: execute sells
     for t, w in list(trades.items()):
@@ -218,7 +216,6 @@ def _execute_trades(
             price = open_prices.get(t, 0.0)
             if price > 0:
                 trade_value = shares[t] * price
-                freed_cash += trade_value
                 total_cost += trade_value * COST_RATE
             del shares[t]
 

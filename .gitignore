@@ -46,11 +46,7 @@ coverage.xml
 *.swp
 *.swo
 
-# Project specific
-output/
-*.parquet
-*.log
-.claude/
+ 
 
 # OS
 .DS_Store
