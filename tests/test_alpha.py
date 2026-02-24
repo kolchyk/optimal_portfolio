@@ -1,10 +1,10 @@
-"""Tests for simplified KAMA momentum alpha (Long/Cash, equal weight)."""
+"""Tests for KAMA momentum alpha — get_buy_candidates API."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.portfolio_sim.alpha import compute_target_weights
+from src.portfolio_sim.alpha import get_buy_candidates
 from src.portfolio_sim.config import TOP_N
 
 
@@ -15,13 +15,11 @@ def simple_prices():
     n_days = 200
     dates = pd.bdate_range("2023-01-02", periods=n_days)
     data = {}
-    # T00-T04: strong uptrend (good momentum)
     for i in range(5):
         drift = 0.001 * (5 - i)
         data[f"T{i:02d}"] = 100 * np.exp(
             np.cumsum(np.random.normal(drift, 0.01, n_days))
         )
-    # T05-T09: downtrend (bad momentum)
     for i in range(5, 10):
         data[f"T{i:02d}"] = 100 * np.exp(
             np.cumsum(np.random.normal(-0.001, 0.01, n_days))
@@ -46,44 +44,43 @@ def kama_high(simple_tickers):
     return {t: 1e6 for t in simple_tickers}
 
 
-def test_returns_dict(simple_prices, simple_tickers, kama_low):
-    result = compute_target_weights(simple_prices, simple_tickers, kama_low)
-    assert isinstance(result, dict)
+def test_returns_list(simple_prices, simple_tickers, kama_low):
+    result = get_buy_candidates(simple_prices, simple_tickers, kama_low)
+    assert isinstance(result, list)
 
 
-def test_bull_mode_equal_weight(simple_prices, simple_tickers, kama_low):
-    result = compute_target_weights(simple_prices, simple_tickers, kama_low)
-    if result:
-        expected_weight = 1.0 / TOP_N
-        for w in result.values():
-            assert w == pytest.approx(expected_weight)
-
-
-def test_bear_mode_returns_empty(simple_prices, simple_tickers, kama_low):
-    result = compute_target_weights(
-        simple_prices, simple_tickers, kama_low, is_bull=False
-    )
-    assert result == {}
+def test_candidates_are_strings(simple_prices, simple_tickers, kama_low):
+    result = get_buy_candidates(simple_prices, simple_tickers, kama_low)
+    assert all(isinstance(t, str) for t in result)
 
 
 def test_kama_filter_removes_all(simple_prices, simple_tickers, kama_high):
-    result = compute_target_weights(simple_prices, simple_tickers, kama_high)
-    assert result == {}
+    result = get_buy_candidates(simple_prices, simple_tickers, kama_high)
+    assert result == []
 
 
 def test_positive_momentum_preferred(simple_prices, simple_tickers, kama_low):
-    result = compute_target_weights(simple_prices, simple_tickers, kama_low)
-    # T00-T04 have strong positive drift, they should dominate the selection
-    strong_uptrend = {f"T{i:02d}" for i in range(3)}  # T00, T01, T02
-    selected = set(result.keys())
-    assert strong_uptrend.issubset(selected)
+    result = get_buy_candidates(simple_prices, simple_tickers, kama_low)
+    strong_uptrend = {f"T{i:02d}" for i in range(3)}
+    assert strong_uptrend.issubset(set(result))
 
 
 def test_max_positions_capped(simple_prices, simple_tickers, kama_low):
-    result = compute_target_weights(simple_prices, simple_tickers, kama_low)
+    result = get_buy_candidates(simple_prices, simple_tickers, kama_low)
     assert len(result) <= TOP_N
 
 
-def test_weights_sum_le_one(simple_prices, simple_tickers, kama_low):
-    result = compute_target_weights(simple_prices, simple_tickers, kama_low)
-    assert sum(result.values()) <= 1.0 + 1e-6
+def test_ranked_descending_by_momentum(simple_prices, simple_tickers, kama_low):
+    """Candidates should be sorted with highest momentum first."""
+    result = get_buy_candidates(simple_prices, simple_tickers, kama_low)
+    if len(result) >= 2:
+        for i in range(len(result) - 1):
+            t_a, t_b = result[i], result[i + 1]
+            mom_a = simple_prices[t_a].iloc[-1] / simple_prices[t_a].iloc[0] - 1
+            mom_b = simple_prices[t_b].iloc[-1] / simple_prices[t_b].iloc[0] - 1
+            assert mom_a >= mom_b
+
+
+def test_empty_tickers_returns_empty(simple_prices, kama_low):
+    result = get_buy_candidates(simple_prices, [], kama_low)
+    assert result == []

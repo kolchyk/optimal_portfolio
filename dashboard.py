@@ -15,10 +15,11 @@ from src.portfolio_sim.data import fetch_price_data, fetch_sp500_tickers
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.reporting import compute_drawdown_series, compute_metrics
 
-st.set_page_config(
-    page_title="KAMA Momentum Strategy",
-    layout="wide",
-)
+if __name__ == "__main__":
+    st.set_page_config(
+        page_title="KAMA Momentum Strategy",
+        layout="wide",
+    )
 
 
 def _setup_logging():

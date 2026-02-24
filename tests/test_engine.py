@@ -1,10 +1,10 @@
-"""Tests for simplified simulation engine (Long/Cash only)."""
+"""Tests for simulation engine (Long/Cash only) with lazy hold + hysteresis."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.portfolio_sim.config import INITIAL_CAPITAL
+from src.portfolio_sim.config import INITIAL_CAPITAL, TOP_N
 from src.portfolio_sim.engine import COST_RATE, _execute_trades, run_simulation
 
 
@@ -32,32 +32,35 @@ def sim_data():
 
 def test_returns_two_series(sim_data):
     close, open_, tickers = sim_data
-    equity, spy_eq = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
-    assert isinstance(equity, pd.Series)
-    assert isinstance(spy_eq, pd.Series)
-    assert len(equity) == len(spy_eq)
+    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
+    assert isinstance(result.equity, pd.Series)
+    assert isinstance(result.spy_equity, pd.Series)
+    assert len(result.equity) == len(result.spy_equity)
 
 
 def test_equity_starts_near_initial_capital(sim_data):
     close, open_, tickers = sim_data
-    equity, _ = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
+    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
+    equity = result.equity
     assert abs(equity.iloc[0] - INITIAL_CAPITAL) / INITIAL_CAPITAL < 0.05
 
 
 def test_spy_benchmark_starts_at_initial_capital(sim_data):
     close, open_, tickers = sim_data
-    _, spy_eq = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
+    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
+    spy_eq = result.spy_equity
     assert spy_eq.iloc[0] == pytest.approx(INITIAL_CAPITAL, rel=0.01)
 
 
 def test_equity_positive(sim_data):
     close, open_, tickers = sim_data
-    equity, _ = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
+    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
+    equity = result.equity
     assert (equity >= 0).all()
 
 
 def test_bear_regime_preserves_capital():
-    """When SPY is in strong downtrend, strategy should go to cash and preserve capital."""
+    """When SPY is in strong downtrend, strategy should go to cash."""
     np.random.seed(42)
     n = 250
     dates = pd.bdate_range("2022-01-03", periods=n)
@@ -75,10 +78,9 @@ def test_bear_regime_preserves_capital():
     close = pd.DataFrame(data, index=dates)
     open_ = close.copy()
 
-    equity, spy_eq = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
-    # In pure bear market, strategy should lose less than SPY by going to cash
-    strat_return = equity.iloc[-1] / equity.iloc[0] - 1
-    spy_return = spy_eq.iloc[-1] / spy_eq.iloc[0] - 1
+    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
+    strat_return = result.equity.iloc[-1] / result.equity.iloc[0] - 1
+    spy_return = result.spy_equity.iloc[-1] / result.spy_equity.iloc[0] - 1
     assert strat_return > spy_return
 
 
@@ -87,13 +89,11 @@ def test_execute_trades_bear_sellall_no_double_counting():
     shares = {"AAPL": 10.0, "MSFT": 5.0}
     open_prices = pd.Series({"AAPL": 150.0, "MSFT": 300.0})
 
-    # equity_at_open = outer_cash(2000) + 10*150 + 5*300 = 5000
     equity_at_open = 5000.0
-    trades = {}  # empty dict = sell everything (bear regime)
+    trades = {}
 
     returned_cash = _execute_trades(shares, trades, equity_at_open, open_prices)
 
-    # total trade value = 10*150 + 5*300 = 3000
     expected_cost = 3000.0 * COST_RATE
     expected_cash = equity_at_open - expected_cost
 
@@ -123,13 +123,40 @@ def test_bear_regime_equity_does_not_inflate():
     data = {}
     for t in tickers:
         data[t] = 100 * np.exp(np.cumsum(np.random.normal(0.001, 0.005, n)))
-    # SPY in massive steady decline — triggers bear regime
     data["SPY"] = 100 * np.exp(np.cumsum(np.full(n, -0.01)))
 
     close = pd.DataFrame(data, index=dates)
     open_ = close.copy()
 
-    equity, _ = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
-
-    # With bear sell-all and costs, equity should not inflate beyond initial capital
+    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
+    equity = result.equity
     assert equity.max() < INITIAL_CAPITAL * 1.05
+
+
+def test_strict_slot_sizing_single_buy():
+    """FIX #3: A single buy must get at most 1/TOP_N of equity, not all cash."""
+    shares = {}
+    open_prices = pd.Series({"AAPL": 100.0})
+    equity_at_open = 10000.0
+    trades = {"AAPL": 1.0}
+
+    _execute_trades(shares, trades, equity_at_open, open_prices)
+
+    max_slot = equity_at_open / TOP_N
+    position_value = shares["AAPL"] * 100.0
+    assert position_value <= max_slot * 1.01
+
+
+def test_strict_slot_sizing_prevents_concentration():
+    """With 50% freed cash and 1 buy, position must still be ~5%, not 50%."""
+    shares = {"MSFT": 20.0}
+    open_prices = pd.Series({"MSFT": 250.0, "GOOG": 100.0})
+    equity_at_open = 10000.0
+    trades = {"GOOG": 1.0}
+
+    _execute_trades(shares, trades, equity_at_open, open_prices)
+
+    max_slot = equity_at_open / TOP_N
+    goog_value = shares["GOOG"] * 100.0
+    assert goog_value <= max_slot * 1.01
+    assert goog_value < equity_at_open * 0.10

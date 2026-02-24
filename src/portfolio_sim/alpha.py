@@ -1,9 +1,10 @@
-"""KAMA momentum alpha — Long/Cash only, equal weight.
+"""KAMA momentum alpha — Long/Cash only.
 
-Algorithm (Market Breathing check is done in engine.py):
+Selects buy candidates from the universe based on:
   1. KAMA trend filter: keep stocks where Close > KAMA * (1 + KAMA_BUFFER).
   2. Momentum ranking: sort by LOOKBACK_PERIOD-day return, take top N.
-  3. Equal weight: 1/TOP_N per selected stock.
+
+Does NOT dictate weights — sizing is handled by the engine.
 """
 
 import numpy as np
@@ -12,30 +13,29 @@ import pandas as pd
 from src.portfolio_sim.config import KAMA_BUFFER, TOP_N
 
 
-def compute_target_weights(
+def get_buy_candidates(
     prices_window: pd.DataFrame,
     tickers: list[str],
     kama_values: dict[str, float],
-    is_bull: bool = True,
-) -> dict[str, float]:
-    """Compute equal-weight target portfolio for selected momentum stocks.
+    kama_buffer: float = KAMA_BUFFER,
+    top_n: int = TOP_N,
+) -> list[str]:
+    """Return an ordered list of top-momentum tickers passing the KAMA filter.
 
     Args:
         prices_window: Close prices with rows >= LOOKBACK_PERIOD trading days,
                        cols = tickers.
         tickers: ordered list of tradable ticker symbols (excludes SPY).
         kama_values: {ticker: current_kama_value} for KAMA filter.
-        is_bull: True = SPY above KAMA (risk-on), False = risk-off.
+        kama_buffer: hysteresis buffer for KAMA filter (default from config).
+        top_n: maximum number of candidates to return (default from config).
 
     Returns:
-        dict mapping ticker -> target weight (0.0 to 1/TOP_N).
-        If bear regime or no candidates, returns empty dict (100% cash).
+        List of up to *top_n* ticker symbols, ranked by descending momentum.
+        Empty list when no candidates pass both filters.
     """
-    if not is_bull:
-        return {}
-
-    # KAMA trend filter with buffer
     candidates = []
+
     for t in tickers:
         if t not in prices_window.columns:
             continue
@@ -43,13 +43,12 @@ def compute_target_weights(
         kama = kama_values.get(t, np.nan)
         if np.isnan(close) or np.isnan(kama):
             continue
-        if close > kama * (1 + KAMA_BUFFER):
+        if close > kama * (1 + kama_buffer):
             candidates.append(t)
 
     if not candidates:
-        return {}
+        return []
 
-    # Momentum ranking (period-day return)
     momentum: dict[str, float] = {}
     for t in candidates:
         close_now = prices_window[t].iloc[-1]
@@ -59,18 +58,10 @@ def compute_target_weights(
         else:
             momentum[t] = close_now / close_past - 1.0
 
-    # Keep only positive momentum, sort descending, take top N
     ranked = sorted(
         [(t, m) for t, m in momentum.items() if m > 0],
         key=lambda x: x[1],
         reverse=True,
     )
 
-    if not ranked:
-        return {}
-
-    selected = [t for t, _ in ranked[:TOP_N]]
-
-    # Equal weight
-    weight = 1.0 / TOP_N
-    return {t: weight for t in selected}
+    return [t for t, _ in ranked[:top_n]]

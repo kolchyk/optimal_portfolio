@@ -90,17 +90,17 @@ def main():
 
     # Run simulation
     print("\nRunning simulation...")
-    equity, spy_equity = run_simulation(
+    result = run_simulation(
         close_prices, open_prices, valid_tickers, INITIAL_CAPITAL
     )
 
     # Report
-    strat_metrics = compute_metrics(equity)
-    spy_metrics = compute_metrics(spy_equity)
+    strat_metrics = compute_metrics(result.equity)
+    spy_metrics = compute_metrics(result.spy_equity)
 
     print(f"\n{format_comparison_table(strat_metrics, spy_metrics)}")
 
-    save_equity_png(equity, spy_equity, output_dir)
+    save_equity_png(result.equity, result.spy_equity, output_dir)
     print(f"\nOutput saved to {output_dir}")
 
 

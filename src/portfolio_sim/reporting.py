@@ -23,6 +23,7 @@ def compute_metrics(equity: pd.Series) -> dict:
             "sharpe": 0.0,
             "calmar": 0.0,
             "annualized_vol": 0.0,
+            "win_rate": 0.0,
             "n_days": 0,
         }
 
@@ -40,6 +41,8 @@ def compute_metrics(equity: pd.Series) -> dict:
     sharpe = (cagr - RISK_FREE_RATE) / ann_vol if ann_vol > 0 else 0.0
     calmar = cagr / max_dd if max_dd > 0 else 0.0
 
+    win_rate = float((returns > 0).sum() / len(returns)) if len(returns) > 0 else 0.0
+
     return {
         "total_return": float(total_return),
         "cagr": float(cagr),
@@ -47,6 +50,7 @@ def compute_metrics(equity: pd.Series) -> dict:
         "sharpe": float(sharpe),
         "calmar": float(calmar),
         "annualized_vol": float(ann_vol),
+        "win_rate": win_rate,
         "n_days": days,
     }
 
@@ -57,6 +61,39 @@ def compute_drawdown_series(equity: pd.Series) -> pd.Series:
         return pd.Series(dtype=float)
     rolling_max = equity.cummax()
     return (equity - rolling_max) / rolling_max
+
+
+def compute_monthly_returns(equity: pd.Series) -> pd.DataFrame:
+    """Return a Year x Month table of monthly returns (as fractions)."""
+    monthly = equity.resample("ME").last().pct_change().dropna()
+    table = monthly.groupby([monthly.index.year, monthly.index.month]).first().unstack()
+    if isinstance(table.columns, pd.MultiIndex):
+        table.columns = table.columns.droplevel(0)
+    month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    table.columns = [month_names[c - 1] for c in table.columns]
+    return table
+
+
+def compute_yearly_returns(equity: pd.Series) -> pd.Series:
+    """Return annual returns as a Series indexed by year."""
+    yearly = equity.resample("YE").last()
+    returns = yearly.pct_change().dropna()
+    returns.index = returns.index.year
+    return returns
+
+
+def compute_rolling_sharpe(
+    equity: pd.Series,
+    window: int = 252,
+    risk_free_rate: float = RISK_FREE_RATE,
+) -> pd.Series:
+    """Return rolling annualized Sharpe ratio."""
+    returns = equity.pct_change().dropna()
+    rolling_mean = returns.rolling(window).mean() * 252
+    rolling_std = returns.rolling(window).std() * np.sqrt(252)
+    sharpe = ((rolling_mean - risk_free_rate) / rolling_std).dropna()
+    return sharpe
 
 
 def format_metrics_table(metrics: dict) -> str:
