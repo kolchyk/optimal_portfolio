@@ -1,7 +1,7 @@
 """Data loading: tickers + price fetching via yfinance, Parquet cache.
 
 Supports two universes:
-  - S&P 500 (from Wikipedia / local CSV)
+  - S&P 500 (from local CSV or fallback URL)
   - Cross-asset ETFs (hardcoded in config.py)
 
 Cache behavior:
@@ -25,7 +25,7 @@ OPEN_CACHE = CACHE_DIR / "open_prices.parquet"
 
 
 def fetch_sp500_tickers() -> list[str]:
-    """Fetch current S&P 500 constituent tickers from Wikipedia or local CSV.
+    """Fetch current S&P 500 constituent tickers from local CSV or fallback URL.
 
     Returns sorted list of ticker symbols. Dots in symbols (e.g. BRK.B)
     are replaced with hyphens for yfinance compatibility.
@@ -36,7 +36,7 @@ def fetch_sp500_tickers() -> list[str]:
         df = pd.read_csv(csv_path)
         tickers = df["Symbol"].str.replace(".", "-", regex=False).tolist()
     else:
-        log.info("Fetching S&P 500 constituents from Wikipedia")
+        log.info("Fetching S&P 500 constituents from fallback URL")
         url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
         tables = pd.read_html(url)
         df = tables[0]
