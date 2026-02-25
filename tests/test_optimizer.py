@@ -1,21 +1,19 @@
-"""Tests for the walk-forward parameter optimizer."""
+"""Tests for the parameter sensitivity analysis module."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.portfolio_sim.config import INITIAL_CAPITAL
 from src.portfolio_sim.optimizer import (
-    WalkForwardConfig,
+    SENSITIVITY_GRID,
+    SensitivityResult,
     build_param_grid,
-    compute_is_oos_degradation,
+    compute_marginal_profiles,
     compute_objective,
-    compute_stability_scores,
-    concatenate_oos_equity,
-    generate_folds,
+    compute_robustness_scores,
+    format_sensitivity_report,
     precompute_kama_caches,
-    FoldResult,
-    analyze_parameter_stability,
+    run_sensitivity,
 )
 from src.portfolio_sim.params import StrategyParams
 
@@ -23,18 +21,6 @@ from src.portfolio_sim.params import StrategyParams
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
-@pytest.fixture
-def long_dates() -> pd.DatetimeIndex:
-    """1600 business days (~6.3 years) — enough for multiple folds."""
-    return pd.bdate_range("2018-01-02", periods=1600)
-
-
-@pytest.fixture
-def short_dates() -> pd.DatetimeIndex:
-    """500 business days — not enough for 2 folds with default config."""
-    return pd.bdate_range("2021-01-04", periods=500)
-
-
 @pytest.fixture
 def long_synthetic_prices() -> pd.DataFrame:
     """1600 days of synthetic Close prices for 10 tickers + SPY."""
@@ -59,48 +45,6 @@ def long_synthetic_open(long_synthetic_prices: pd.DataFrame) -> pd.DataFrame:
     np.random.seed(123)
     noise = 1 + np.random.normal(0, 0.002, long_synthetic_prices.shape)
     return long_synthetic_prices * noise
-
-
-# ---------------------------------------------------------------------------
-# Fold generation tests
-# ---------------------------------------------------------------------------
-class TestGenerateFolds:
-    def test_minimum_two_folds(self, long_dates):
-        config = WalkForwardConfig(min_is_days=756, oos_days=252, step_days=252)
-        folds = generate_folds(long_dates, config)
-        assert len(folds) >= 2
-
-    def test_too_few_dates_raises(self, short_dates):
-        config = WalkForwardConfig(min_is_days=756, oos_days=252, step_days=252)
-        with pytest.raises(ValueError, match="at least 2"):
-            generate_folds(short_dates, config)
-
-    def test_oos_starts_after_is_ends(self, long_dates):
-        config = WalkForwardConfig(min_is_days=756, oos_days=252, step_days=252)
-        folds = generate_folds(long_dates, config)
-        for is_dates, oos_dates in folds:
-            assert oos_dates[0] > is_dates[-1], "OOS must start after IS ends"
-
-    def test_is_window_expands(self, long_dates):
-        config = WalkForwardConfig(min_is_days=756, oos_days=252, step_days=252)
-        folds = generate_folds(long_dates, config)
-        is_lengths = [len(is_d) for is_d, _ in folds]
-        for i in range(1, len(is_lengths)):
-            assert is_lengths[i] > is_lengths[i - 1], "IS window should expand"
-
-    def test_oos_window_fixed_length(self, long_dates):
-        config = WalkForwardConfig(min_is_days=756, oos_days=252, step_days=252)
-        folds = generate_folds(long_dates, config)
-        for _, oos_dates in folds:
-            assert len(oos_dates) == 252
-
-    def test_no_overlap_between_folds_oos(self, long_dates):
-        config = WalkForwardConfig(min_is_days=756, oos_days=252, step_days=252)
-        folds = generate_folds(long_dates, config)
-        for i in range(1, len(folds)):
-            prev_oos_end = folds[i - 1][1][-1]
-            curr_oos_start = folds[i][1][0]
-            assert curr_oos_start > prev_oos_end or curr_oos_start == folds[i][1][0]
 
 
 # ---------------------------------------------------------------------------
@@ -151,44 +95,6 @@ class TestComputeObjective:
 
 
 # ---------------------------------------------------------------------------
-# OOS concatenation tests
-# ---------------------------------------------------------------------------
-class TestConcatenateOOS:
-    def _make_fold_result(self, fold_idx, start_val, end_val, n_days, start_date):
-        dates = pd.bdate_range(start_date, periods=n_days)
-        values = np.linspace(start_val, end_val, n_days)
-        equity = pd.Series(values, index=dates)
-        return FoldResult(
-            fold_index=fold_idx,
-            is_start=dates[0],
-            is_end=dates[0],
-            oos_start=dates[0],
-            oos_end=dates[-1],
-            best_params=StrategyParams(),
-            is_objective=1.0,
-            oos_equity=equity,
-            oos_metrics={},
-        )
-
-    def test_single_fold_unchanged(self):
-        fr = self._make_fold_result(0, 10000, 12000, 252, "2020-01-01")
-        result = concatenate_oos_equity([fr])
-        pd.testing.assert_series_equal(result, fr.oos_equity)
-
-    def test_multi_fold_continuity(self):
-        fr1 = self._make_fold_result(0, 10000, 12000, 100, "2020-01-01")
-        fr2 = self._make_fold_result(1, 10000, 11000, 100, "2020-06-01")
-        result = concatenate_oos_equity([fr1, fr2])
-        assert len(result) == 200
-        # Second segment should start where first ended
-        assert abs(result.iloc[100] - 12000) < 1
-
-    def test_empty_returns_empty(self):
-        result = concatenate_oos_equity([])
-        assert result.empty
-
-
-# ---------------------------------------------------------------------------
 # Parameter grid tests
 # ---------------------------------------------------------------------------
 class TestBuildParamGrid:
@@ -219,68 +125,6 @@ class TestBuildParamGrid:
 
 
 # ---------------------------------------------------------------------------
-# Stability analysis tests
-# ---------------------------------------------------------------------------
-class TestParameterStability:
-    def _make_fold_results(self, params_list):
-        results = []
-        for i, bp in enumerate(params_list):
-            dates = pd.bdate_range("2020-01-01", periods=10)
-            eq = pd.Series(np.linspace(10000, 11000, 10), index=dates)
-            results.append(
-                FoldResult(
-                    fold_index=i,
-                    is_start=dates[0],
-                    is_end=dates[-1],
-                    oos_start=dates[0],
-                    oos_end=dates[-1],
-                    best_params=bp,
-                    is_objective=1.5,
-                    oos_equity=eq,
-                    oos_metrics={"cagr": 0.1, "max_drawdown": 0.05, "calmar": 2.0},
-                )
-            )
-        return results
-
-    def test_stable_params_high_score(self):
-        bp = StrategyParams(kama_period=20, lookback_period=60, top_n=20, kama_buffer=0.01)
-        folds = self._make_fold_results([bp, bp, bp])
-        df = analyze_parameter_stability(folds)
-        scores = compute_stability_scores(df)
-        for name, score in scores.items():
-            assert score == 1.0
-
-    def test_unstable_params_low_score(self):
-        folds = self._make_fold_results([
-            StrategyParams(kama_period=10),
-            StrategyParams(kama_period=40),
-            StrategyParams(kama_period=10),
-        ])
-        df = analyze_parameter_stability(folds)
-        scores = compute_stability_scores(df)
-        assert scores["kama_period"] == 0.0  # max range covered
-
-
-class TestISOOSDegradation:
-    def test_no_degradation(self):
-        dates = pd.bdate_range("2020-01-01", periods=10)
-        eq = pd.Series(np.linspace(10000, 11000, 10), index=dates)
-        fr = FoldResult(
-            fold_index=0,
-            is_start=dates[0],
-            is_end=dates[-1],
-            oos_start=dates[0],
-            oos_end=dates[-1],
-            best_params=StrategyParams(),
-            is_objective=2.0,
-            oos_equity=eq,
-            oos_metrics={"calmar": 2.0},
-        )
-        degradations = compute_is_oos_degradation([fr])
-        assert degradations[0] == pytest.approx(0.0)
-
-
-# ---------------------------------------------------------------------------
 # KAMA precomputation test
 # ---------------------------------------------------------------------------
 class TestPrecomputeKamaCaches:
@@ -299,3 +143,224 @@ class TestPrecomputeKamaCaches:
         caches = precompute_kama_caches(long_synthetic_prices, tickers, [20])
         for t, series in caches[20].items():
             assert isinstance(series, pd.Series)
+
+
+# ---------------------------------------------------------------------------
+# Marginal profiles tests
+# ---------------------------------------------------------------------------
+class TestMarginalProfiles:
+    def test_one_param_profiles(self):
+        """Grouping by kama_period should produce correct mean objectives."""
+        grid_df = pd.DataFrame({
+            "kama_period": [10, 10, 20, 20],
+            "lookback_period": [60, 90, 60, 90],
+            "kama_buffer": [0.01, 0.01, 0.01, 0.01],
+            "top_n": [20, 20, 20, 20],
+            "objective": [2.0, 4.0, 3.0, 3.0],
+        })
+        profiles = compute_marginal_profiles(grid_df)
+        kp_profile = profiles["kama_period"]
+        assert len(kp_profile) == 2
+        row_10 = kp_profile[kp_profile["kama_period"] == 10].iloc[0]
+        assert row_10["mean_objective"] == pytest.approx(3.0)
+        row_20 = kp_profile[kp_profile["kama_period"] == 20].iloc[0]
+        assert row_20["mean_objective"] == pytest.approx(3.0)
+
+    def test_invalid_results_excluded(self):
+        """Rows with objective == -999 should be excluded from profiles."""
+        grid_df = pd.DataFrame({
+            "kama_period": [10, 10, 20],
+            "lookback_period": [60, 90, 60],
+            "kama_buffer": [0.01, 0.01, 0.01],
+            "top_n": [20, 20, 20],
+            "objective": [2.0, -999.0, 3.0],
+        })
+        profiles = compute_marginal_profiles(grid_df)
+        kp_profile = profiles["kama_period"]
+        row_10 = kp_profile[kp_profile["kama_period"] == 10].iloc[0]
+        # Only the valid row (objective=2.0) should be included
+        assert row_10["mean_objective"] == pytest.approx(2.0)
+        assert row_10["count"] == 1
+
+    def test_all_invalid_returns_empty(self):
+        """All -999 objectives should produce empty profiles."""
+        grid_df = pd.DataFrame({
+            "kama_period": [10, 20],
+            "lookback_period": [60, 60],
+            "kama_buffer": [0.01, 0.01],
+            "top_n": [20, 20],
+            "objective": [-999.0, -999.0],
+        })
+        profiles = compute_marginal_profiles(grid_df)
+        assert profiles["kama_period"].empty
+
+
+# ---------------------------------------------------------------------------
+# Robustness scores tests
+# ---------------------------------------------------------------------------
+class TestRobustnessScores:
+    def test_flat_profile_scores_high(self):
+        """If objective is the same for all param values, score = 1.0."""
+        profiles = {
+            "kama_period": pd.DataFrame({
+                "kama_period": [10, 20, 40],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
+            "lookback_period": pd.DataFrame({
+                "lookback_period": [20, 60, 120],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
+            "kama_buffer": pd.DataFrame({
+                "kama_buffer": [0.005, 0.015, 0.03],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
+            "top_n": pd.DataFrame({
+                "top_n": [10, 20, 30],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
+        }
+        scores = compute_robustness_scores(profiles)
+        for name in ["kama_period", "lookback_period", "kama_buffer", "top_n"]:
+            assert scores[name] == pytest.approx(1.0)
+
+    def test_peaked_profile_scores_low(self):
+        """If one value dominates, score should be low."""
+        profiles = {
+            "kama_period": pd.DataFrame({
+                "kama_period": [10, 20, 40],
+                "mean_objective": [0.5, 5.0, 0.5],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
+            "lookback_period": pd.DataFrame({
+                "lookback_period": [20, 60, 120],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
+            "kama_buffer": pd.DataFrame({
+                "kama_buffer": [0.005, 0.015, 0.03],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
+            "top_n": pd.DataFrame({
+                "top_n": [10, 20, 30],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
+        }
+        scores = compute_robustness_scores(profiles)
+        assert scores["kama_period"] < 0.5  # peaked, not robust
+        assert scores["lookback_period"] == pytest.approx(1.0)  # flat
+
+    def test_empty_profile_scores_zero(self):
+        profiles = {
+            "kama_period": pd.DataFrame(
+                columns=["kama_period", "mean_objective", "std_objective", "count"]
+            ),
+            "lookback_period": pd.DataFrame(
+                columns=["lookback_period", "mean_objective", "std_objective", "count"]
+            ),
+            "kama_buffer": pd.DataFrame(
+                columns=["kama_buffer", "mean_objective", "std_objective", "count"]
+            ),
+            "top_n": pd.DataFrame(
+                columns=["top_n", "mean_objective", "std_objective", "count"]
+            ),
+        }
+        scores = compute_robustness_scores(profiles)
+        for name in ["kama_period", "lookback_period", "kama_buffer", "top_n"]:
+            assert scores[name] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# Sensitivity report formatting test
+# ---------------------------------------------------------------------------
+class TestFormatSensitivityReport:
+    def test_report_contains_key_sections(self):
+        grid_df = pd.DataFrame({
+            "kama_period": [10, 20],
+            "lookback_period": [60, 60],
+            "kama_buffer": [0.01, 0.01],
+            "top_n": [20, 20],
+            "objective": [2.0, 3.0],
+            "cagr": [0.15, 0.20],
+            "max_drawdown": [0.10, 0.08],
+            "sharpe": [1.2, 1.5],
+            "calmar": [1.5, 2.5],
+        })
+        profiles = compute_marginal_profiles(grid_df)
+        scores = compute_robustness_scores(profiles)
+        result = SensitivityResult(
+            grid_results=grid_df,
+            marginal_profiles=profiles,
+            robustness_scores=scores,
+            base_params=StrategyParams(kama_period=10, lookback_period=60,
+                                       kama_buffer=0.01, top_n=20),
+            base_objective=2.0,
+        )
+        report = format_sensitivity_report(result)
+        assert "SENSITIVITY ANALYSIS" in report
+        assert "Base Parameters" in report
+        assert "Marginal Profiles" in report
+        assert "Robustness Scores" in report
+        assert "VERDICT" in report
+
+
+# ---------------------------------------------------------------------------
+# End-to-end sensitivity test (small grid, synthetic data)
+# ---------------------------------------------------------------------------
+class TestRunSensitivity:
+    def test_small_grid_runs(self, long_synthetic_prices, long_synthetic_open):
+        """End-to-end: tiny 2x1x1x1 grid on synthetic data."""
+        tickers = [c for c in long_synthetic_prices.columns if c != "SPY"]
+        grid = {
+            "kama_period": [10, 20],
+            "lookback_period": [60],
+            "kama_buffer": [0.01],
+            "top_n": [10],
+        }
+        result = run_sensitivity(
+            long_synthetic_prices,
+            long_synthetic_open,
+            tickers,
+            initial_capital=10_000,
+            grid=grid,
+            n_workers=1,
+        )
+        assert isinstance(result, SensitivityResult)
+        assert len(result.grid_results) == 2
+        assert "kama_period" in result.robustness_scores
+        assert "lookback_period" in result.robustness_scores
+
+    def test_base_objective_found(self, long_synthetic_prices, long_synthetic_open):
+        """Base params objective should be populated when base is in grid."""
+        tickers = [c for c in long_synthetic_prices.columns if c != "SPY"]
+        base = StrategyParams(kama_period=20, lookback_period=60,
+                              kama_buffer=0.01, top_n=10)
+        grid = {
+            "kama_period": [10, 20],
+            "lookback_period": [60],
+            "kama_buffer": [0.01],
+            "top_n": [10],
+        }
+        result = run_sensitivity(
+            long_synthetic_prices,
+            long_synthetic_open,
+            tickers,
+            initial_capital=10_000,
+            base_params=base,
+            grid=grid,
+            n_workers=1,
+        )
+        assert not np.isnan(result.base_objective)

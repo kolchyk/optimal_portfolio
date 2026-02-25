@@ -1,5 +1,8 @@
 """Performance metrics, drawdown computation, and report generation."""
 
+from __future__ import annotations
+
+from collections import Counter
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -178,3 +181,149 @@ def save_equity_png(
     plt.close(fig)
     print(f"Equity curve saved to {path}")
     return path
+
+
+def format_asset_report(
+    sim_result,
+    close_prices: pd.DataFrame,
+    asset_meta: pd.DataFrame | None = None,
+) -> str:
+    """Format a report describing assets held by the strategy and their behavior.
+
+    Args:
+        sim_result: SimulationResult from engine.run_simulation.
+        close_prices: Full close-price DataFrame (DatetimeIndex x tickers).
+        asset_meta: Optional DataFrame with asset metadata (columns: Symbol,
+            Shortname, Sector, Industry). Loaded from sp500_companies.csv.
+
+    Returns:
+        Human-readable text report.
+    """
+    holdings = sim_result.holdings_history  # DatetimeIndex x tickers, values = shares
+    equity = sim_result.equity
+    trade_log = sim_result.trade_log
+
+    # Build metadata lookup
+    meta_lookup: dict[str, dict] = {}
+    if asset_meta is not None:
+        for _, row in asset_meta.iterrows():
+            meta_lookup[row["Symbol"]] = {
+                "name": row.get("Shortname", ""),
+                "sector": row.get("Sector", ""),
+                "industry": row.get("Industry", ""),
+            }
+
+    # Identify tickers that were actually held (shares > 0 at least once)
+    held_tickers = [
+        t for t in holdings.columns
+        if (holdings[t] > 0).any()
+    ]
+
+    if not held_tickers:
+        return "No assets were held during the simulation period."
+
+    # Trade counts per ticker
+    buy_counts: Counter[str] = Counter()
+    sell_counts: Counter[str] = Counter()
+    for trade in trade_log:
+        ticker = trade["ticker"]
+        if trade["action"] == "buy":
+            buy_counts[ticker] += 1
+        else:
+            sell_counts[ticker] += 1
+
+    # Per-asset stats
+    asset_rows: list[dict] = []
+    sim_start = equity.index[0]
+    sim_end = equity.index[-1]
+
+    for ticker in held_tickers:
+        shares = holdings[ticker]
+        held_mask = shares > 0
+        days_held = int(held_mask.sum())
+
+        # Individual asset return over the full simulation window
+        if ticker in close_prices.columns:
+            px = close_prices[ticker].dropna()
+            px_sim = px.loc[sim_start:sim_end]
+            if len(px_sim) >= 2:
+                asset_return = px_sim.iloc[-1] / px_sim.iloc[0] - 1
+                asset_vol = px_sim.pct_change().dropna().std() * np.sqrt(252)
+            else:
+                asset_return = 0.0
+                asset_vol = 0.0
+        else:
+            asset_return = 0.0
+            asset_vol = 0.0
+
+        # Average portfolio weight when held
+        if days_held > 0 and ticker in close_prices.columns:
+            px_aligned = close_prices[ticker].reindex(equity.index).ffill()
+            position_value = shares * px_aligned
+            weight = (position_value[held_mask] / equity[held_mask]).mean()
+        else:
+            weight = 0.0
+
+        info = meta_lookup.get(ticker, {})
+        asset_rows.append({
+            "ticker": ticker,
+            "name": info.get("name", ""),
+            "sector": info.get("sector", ""),
+            "industry": info.get("industry", ""),
+            "return": asset_return,
+            "volatility": asset_vol,
+            "days_held": days_held,
+            "buys": buy_counts.get(ticker, 0),
+            "sells": sell_counts.get(ticker, 0),
+            "avg_weight": weight,
+        })
+
+    # Sort by days held descending
+    asset_rows.sort(key=lambda r: r["days_held"], reverse=True)
+
+    # --- Format report ---
+    lines: list[str] = []
+    lines.append("=" * 70)
+    lines.append("ASSET REPORT")
+    lines.append("=" * 70)
+
+    # Summary
+    total_days = len(equity)
+    avg_hold = np.mean([r["days_held"] for r in asset_rows])
+    sector_counts = Counter(r["sector"] for r in asset_rows if r["sector"])
+    top_sectors = sector_counts.most_common(5)
+
+    lines.append("")
+    lines.append(f"Simulation period: {sim_start.strftime('%Y-%m-%d')} — "
+                 f"{sim_end.strftime('%Y-%m-%d')} ({total_days} trading days)")
+    lines.append(f"Unique assets traded: {len(asset_rows)}")
+    lines.append(f"Average holding period: {avg_hold:.0f} days")
+    lines.append("")
+    lines.append("Top sectors:")
+    for sector, cnt in top_sectors:
+        lines.append(f"  {sector:<30s} {cnt} assets")
+
+    # Per-asset table
+    lines.append("")
+    lines.append("-" * 70)
+    lines.append("Per-Asset Breakdown:")
+    lines.append("-" * 70)
+
+    for row in asset_rows:
+        ticker = row["ticker"]
+        name = row["name"]
+        header = f"{ticker}" + (f" — {name}" if name else "")
+        lines.append(f"\n  {header}")
+        if row["sector"]:
+            lines.append(f"    Sector:     {row['sector']}")
+        if row["industry"]:
+            lines.append(f"    Industry:   {row['industry']}")
+        lines.append(f"    Return:     {row['return']:>+8.1%}   "
+                     f"Volatility: {row['volatility']:>7.1%}")
+        lines.append(f"    Days held:  {row['days_held']:>5d} / {total_days}   "
+                     f"Avg weight: {row['avg_weight']:>6.1%}")
+        lines.append(f"    Trades:     {row['buys']} buys, {row['sells']} sells")
+
+    lines.append("")
+    lines.append("=" * 70)
+    return "\n".join(lines)
