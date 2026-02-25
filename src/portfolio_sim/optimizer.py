@@ -15,6 +15,7 @@ from __future__ import annotations
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
+from functools import partial
 
 import numpy as np
 import optuna
@@ -87,7 +88,11 @@ class SensitivityResult:
 # ---------------------------------------------------------------------------
 # Objective function
 # ---------------------------------------------------------------------------
-def compute_objective(equity: pd.Series, max_dd_limit: float = 0.30) -> float:
+def compute_objective(
+    equity: pd.Series,
+    max_dd_limit: float = 0.30,
+    min_n_days: int = 60,
+) -> float:
     """Calmar ratio with drawdown floor and hard rejection.
 
     Returns:
@@ -95,7 +100,7 @@ def compute_objective(equity: pd.Series, max_dd_limit: float = 0.30) -> float:
         exceeds *max_dd_limit* or the equity curve is degenerate.
     """
     metrics = compute_metrics(equity)
-    if metrics["n_days"] < 60:
+    if metrics["n_days"] < min_n_days:
         return -999.0
     max_dd = max(metrics["max_drawdown"], 0.05)  # floor at 5%
     if max_dd > max_dd_limit:
@@ -248,6 +253,7 @@ def run_sensitivity(
     n_trials: int = DEFAULT_N_TRIALS,
     n_workers: int | None = None,
     max_dd_limit: float = 0.30,
+    min_n_days: int = 60,
 ) -> SensitivityResult:
     """Run parameter sensitivity analysis using Optuna TPE sampler.
 
@@ -304,6 +310,8 @@ def run_sensitivity(
         initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
     )
 
+    objective_fn = partial(compute_objective, min_n_days=min_n_days)
+
     pbar = tqdm(total=n_trials, desc="Sensitivity trials", unit="trial")
     trials_done = 0
 
@@ -315,7 +323,7 @@ def run_sensitivity(
         futures = {
             executor.submit(
                 evaluate_combo,
-                (p, max_dd_limit, compute_objective, "objective",
+                (p, max_dd_limit, objective_fn, "objective",
                  _SENS_PARAM_KEYS, _SENS_METRIC_KEYS),
             ): (t, p)
             for t, p in zip(trials, params_list)

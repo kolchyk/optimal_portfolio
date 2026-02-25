@@ -16,10 +16,10 @@ RISK_FREE_RATE: float = 0.04
 # ---------------------------------------------------------------------------
 # Strategy parameters — concentrated momentum (4x S&P 500 target)
 # ---------------------------------------------------------------------------
-KAMA_PERIOD: int = 20  # Fast adaptive MA (~4 trading weeks)
-LOOKBACK_PERIOD: int = 60  # ~3-month momentum window
-TOP_N: int = 20  # 20 positions, ~5% each
-KAMA_BUFFER: float = 0.008  # 0.8% hysteresis buffer
+KAMA_PERIOD: int = 10
+LOOKBACK_PERIOD: int = 140  # Центр надежного плато
+TOP_N: int = 10
+KAMA_BUFFER: float = 0.024  # Отступили от пика 0.025 на широкое плечо
 
 # ---------------------------------------------------------------------------
 # Tickers

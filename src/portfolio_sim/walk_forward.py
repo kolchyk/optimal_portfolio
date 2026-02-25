@@ -134,6 +134,13 @@ def run_walk_forward(
         ]
 
         # --- 2. Optimize on IS ---
+        # Relax the min-equity-days threshold for short IS windows:
+        # warmup consumes bars before trading starts, so with short IS
+        # windows the equity curve can be much shorter than 60 days.
+        max_warmup = base_params.warmup  # conservative upper bound
+        available_equity_days = max(1, len(close_is) - max_warmup)
+        min_n_days_is = max(5, min(available_equity_days, 60))
+
         sens_result = run_sensitivity(
             close_is, open_is, valid_is,
             initial_capital,
@@ -142,6 +149,7 @@ def run_walk_forward(
             n_trials=n_trials_per_step,
             n_workers=n_workers,
             max_dd_limit=max_dd_limit,
+            min_n_days=min_n_days_is,
         )
 
         best_params = find_best_params(sens_result)
