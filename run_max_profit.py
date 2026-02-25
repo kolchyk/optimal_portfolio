@@ -10,18 +10,21 @@ Usage:
 """
 
 import argparse
-import logging
-from datetime import datetime
-from pathlib import Path
 
-import structlog
-
+from src.portfolio_sim.cli_utils import (
+    create_output_dir,
+    filter_valid_tickers,
+    setup_logging,
+)
 from src.portfolio_sim.config import INITIAL_CAPITAL
 from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.max_profit import (
     format_max_profit_report,
+    format_pareto_report,
+    run_max_profit_pareto,
     run_max_profit_search,
+    select_best_from_pareto,
 )
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics, format_comparison_table
@@ -36,7 +39,7 @@ def parse_args() -> argparse.Namespace:
         help="Force refresh data cache from yfinance",
     )
     parser.add_argument(
-        "--period", default="5y",
+        "--period", default="2y",
         help="yfinance period string (default: 5y)",
     )
     parser.add_argument(
@@ -48,8 +51,12 @@ def parse_args() -> argparse.Namespace:
         help="Max drawdown rejection limit (default: 0.60 = 60%%)",
     )
     parser.add_argument(
-        "--n-trials", type=int, default=500,
+        "--n-trials", type=int, default=10,
         help="Number of Optuna trials per universe (default: 500)",
+    )
+    parser.add_argument(
+        "--pareto", action="store_true",
+        help="Use multi-objective Pareto search (NSGA-II) instead of single-objective TPE",
     )
     return parser.parse_args()
 
@@ -77,21 +84,8 @@ def run_verification(
 def main():
     args = parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    structlog.configure(
-        processors=[
-            structlog.stdlib.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-        logger_factory=structlog.stdlib.LoggerFactory(),
-    )
-
-    # Output directory
-    dt = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path("output") / f"max_profit_{dt}"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging()
+    output_dir = create_output_dir("max_profit")
 
     summary_lines: list[str] = []
     summary_lines.append("=" * 90)
@@ -119,10 +113,7 @@ def main():
         sizing_mode="risk_parity",
     )
     min_days = etf_params.warmup * 2
-    valid_etf = [
-        t for t in close_etf.columns
-        if len(close_etf[t].dropna()) >= min_days
-    ]
+    valid_etf = filter_valid_tickers(close_etf, min_days)
     print(f"Tradable tickers with {min_days}+ days: {len(valid_etf)}")
 
     # Part 1: Verification
@@ -132,25 +123,56 @@ def main():
     )
 
     # Part 2: Optuna search
-    print(f"\n{'=' * 70}")
-    print(f"OPTUNA SEARCH — Cross-Asset ETF ({args.n_trials} trials)")
-    print(f"{'=' * 70}\n")
+    fixed = {
+        "enable_correlation_filter": True,
+        "correlation_threshold": 0.65,
+        "correlation_lookback": 60,
+        "use_risk_adjusted": True,
+        "sizing_mode": "risk_parity",
+    }
 
-    etf_result = run_max_profit_search(
-        close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
-        universe="etf",
-        default_params=etf_params,
-        fixed_params={
-            "enable_correlation_filter": True,
-            "correlation_threshold": 0.65,
-            "correlation_lookback": 60,
-        },
-        n_trials=args.n_trials,
-        n_workers=args.n_workers,
-        max_dd_limit=args.max_dd,
-    )
+    if args.pareto:
+        print(f"\n{'=' * 70}")
+        print(f"PARETO SEARCH (NSGA-II) — Cross-Asset ETF ({args.n_trials} trials)")
+        print(f"{'=' * 70}\n")
 
-    report_etf = format_max_profit_report(etf_result)
+        etf_result = run_max_profit_pareto(
+            close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
+            universe="etf",
+            default_params=etf_params,
+            fixed_params=fixed,
+            n_trials=args.n_trials,
+            n_workers=args.n_workers,
+        )
+
+        report_etf = format_pareto_report(etf_result)
+        best_pareto = select_best_from_pareto(etf_result)
+        if best_pareto:
+            print(f"\nBest from Pareto front (by Calmar):")
+            print(f"  kama={best_pareto.kama_period}, lookback={best_pareto.lookback_period}, "
+                  f"buffer={best_pareto.kama_buffer}, top_n={best_pareto.top_n}")
+
+        if etf_result.pareto_front is not None:
+            pareto_path = output_dir / "pareto_front_etf.csv"
+            etf_result.pareto_front.to_csv(pareto_path, index=False)
+            print(f"Pareto front saved to {pareto_path}")
+    else:
+        print(f"\n{'=' * 70}")
+        print(f"OPTUNA SEARCH — Cross-Asset ETF ({args.n_trials} trials)")
+        print(f"{'=' * 70}\n")
+
+        etf_result = run_max_profit_search(
+            close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
+            universe="etf",
+            default_params=etf_params,
+            fixed_params=fixed,
+            n_trials=args.n_trials,
+            n_workers=args.n_workers,
+            max_dd_limit=args.max_dd,
+        )
+
+        report_etf = format_max_profit_report(etf_result)
+
     print(f"\n{report_etf}")
 
     # Save
@@ -160,13 +182,6 @@ def main():
     (output_dir / "report_etf.txt").write_text(report_etf)
     summary_lines.append("")
     summary_lines.append(report_etf)
-
-    # ------------------------------------------------------------------
-    # Save combined summary
-    # ------------------------------------------------------------------
-    summary = "\n".join(summary_lines)
-    (output_dir / "summary.txt").write_text(summary)
-    print(f"\nAll results saved to {output_dir}")
 
     # ------------------------------------------------------------------
     # Save combined summary

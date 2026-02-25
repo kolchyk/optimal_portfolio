@@ -8,7 +8,6 @@ import pytest
 from src.portfolio_sim.optimizer import (
     SENSITIVITY_SPACE,
     SensitivityResult,
-    _suggest_params,
     compute_marginal_profiles,
     compute_objective,
     compute_robustness_scores,
@@ -16,6 +15,7 @@ from src.portfolio_sim.optimizer import (
     precompute_kama_caches,
     run_sensitivity,
 )
+from src.portfolio_sim.parallel import suggest_params
 from src.portfolio_sim.params import StrategyParams
 
 
@@ -103,7 +103,7 @@ class TestSearchSpace:
         """Verify _suggest_params produces a valid StrategyParams."""
         study = optuna.create_study()
         trial = study.ask()
-        params = _suggest_params(trial, SENSITIVITY_SPACE)
+        params = suggest_params(trial, SENSITIVITY_SPACE)
         assert isinstance(params, StrategyParams)
 
     def test_kama_period_is_categorical(self):
@@ -113,7 +113,7 @@ class TestSearchSpace:
         results = set()
         for _ in range(50):
             trial = study.ask()
-            params = _suggest_params(trial, SENSITIVITY_SPACE)
+            params = suggest_params(trial, SENSITIVITY_SPACE)
             results.add(params.kama_period)
             study.tell(trial, 1.0)
         assert results.issubset({10, 15, 20, 30, 40})
@@ -124,7 +124,7 @@ class TestSearchSpace:
         params_list = []
         for _ in range(10):
             trial = study.ask()
-            params_list.append(_suggest_params(trial, SENSITIVITY_SPACE))
+            params_list.append(suggest_params(trial, SENSITIVITY_SPACE))
             study.tell(trial, 1.0)
         s = set(params_list)
         assert len(s) <= len(params_list)
@@ -343,7 +343,7 @@ class TestRunSensitivity:
             initial_capital=10_000,
             space=space,
             n_trials=4,
-            n_workers=1,
+            n_workers=-1,
         )
         assert isinstance(result, SensitivityResult)
         assert len(result.grid_results) >= 2
@@ -369,6 +369,6 @@ class TestRunSensitivity:
             base_params=base,
             space=space,
             n_trials=4,
-            n_workers=1,
+            n_workers=-1,
         )
         assert not np.isnan(result.base_objective)

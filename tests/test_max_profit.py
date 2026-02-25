@@ -7,11 +7,11 @@ import pytest
 from src.portfolio_sim.max_profit import (
     MAX_PROFIT_SPACE,
     compute_cagr_objective,
-    _suggest_max_profit_params,
     run_max_profit_search,
     format_max_profit_report,
     MaxProfitResult,
 )
+from src.portfolio_sim.parallel import suggest_params
 from src.portfolio_sim.params import StrategyParams
 
 
@@ -40,21 +40,21 @@ def test_compute_cagr_objective_rejected_short():
     assert compute_cagr_objective(equity) == -999.0
 
 
-def test_suggest_max_profit_params():
+def test_suggest_params():
     """Verify max profit param suggestion produces valid StrategyParams."""
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study()
     trial = study.ask()
-    params = _suggest_max_profit_params(trial, MAX_PROFIT_SPACE)
+    params = suggest_params(trial, MAX_PROFIT_SPACE)
     assert isinstance(params, StrategyParams)
 
 
-def test_suggest_max_profit_params_with_fixed():
+def test_suggest_params_with_fixed():
     """Verify fixed_params override works."""
     optuna.logging.set_verbosity(optuna.logging.WARNING)
     study = optuna.create_study()
     trial = study.ask()
-    params = _suggest_max_profit_params(
+    params = suggest_params(
         trial, MAX_PROFIT_SPACE, fixed_params={"top_n": 10},
     )
     assert isinstance(params, StrategyParams)
@@ -80,7 +80,7 @@ def test_run_max_profit_search_end_to_end(synthetic_prices, synthetic_open_price
         initial_capital=10000,
         space=space,
         n_trials=4,
-        n_workers=1,
+        n_workers=-1,
     )
 
     assert isinstance(result, MaxProfitResult)

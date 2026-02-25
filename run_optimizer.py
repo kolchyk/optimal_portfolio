@@ -8,13 +8,12 @@ Usage:
 """
 
 import argparse
-import logging
-from datetime import datetime
-from pathlib import Path
 
-import pandas as pd
-import structlog
-
+from src.portfolio_sim.cli_utils import (
+    create_output_dir,
+    filter_valid_tickers,
+    setup_logging,
+)
 from src.portfolio_sim.config import INITIAL_CAPITAL
 from src.portfolio_sim.data import fetch_price_data, fetch_etf_tickers
 from src.portfolio_sim.engine import run_simulation
@@ -52,21 +51,8 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
-    structlog.configure(
-        processors=[
-            structlog.stdlib.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer(),
-        ],
-        wrapper_class=structlog.make_filtering_bound_logger(logging.INFO),
-        logger_factory=structlog.stdlib.LoggerFactory(),
-    )
-
-    # Output directory
-    dt = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path("output") / f"sens_{dt}"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    setup_logging()
+    output_dir = create_output_dir("sens")
 
     # Fetch data
     print("\nUsing cross-asset ETF universe...")
@@ -80,10 +66,7 @@ def main():
 
     # Filter tickers with sufficient history
     min_days = 756
-    valid_tickers = [
-        t for t in close_prices.columns
-        if len(close_prices[t].dropna()) >= min_days
-    ]
+    valid_tickers = filter_valid_tickers(close_prices, min_days)
     print(f"Tradable tickers with {min_days}+ days: {len(valid_tickers)}")
 
     # Run sensitivity analysis

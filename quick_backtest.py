@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 import time
 
+from src.portfolio_sim.cli_utils import filter_valid_tickers
 from src.portfolio_sim.config import (
     INITIAL_CAPITAL,
     KAMA_BUFFER,
@@ -38,9 +39,8 @@ def run_quick_backtest(
         tickers = fetch_etf_tickers()
         close, opn = fetch_price_data(tickers, period="5y", cache_suffix="_etf")
 
-    tickers = [t for t in close.columns]
     min_days = 756
-    valid = [t for t in tickers if len(close[t].dropna()) >= min_days]
+    valid = filter_valid_tickers(close, min_days)
 
     params = StrategyParams(
         kama_period=kama_period,

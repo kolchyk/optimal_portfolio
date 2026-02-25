@@ -4,12 +4,16 @@ Unlike the sensitivity analysis in optimizer.py (which checks robustness),
 this module searches for the parameter combination that maximizes CAGR
 over a given period using Optuna's TPE sampler. The drawdown rejection
 limit is relaxed to 60%.
+
+Also provides a multi-objective Pareto search that simultaneously optimizes
+CAGR (maximize) and MaxDD (minimize) using NSGA-II, producing a Pareto
+front of non-dominated solutions.
 """
 
 from __future__ import annotations
 
 import os
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 
 import optuna
@@ -23,27 +27,25 @@ from src.portfolio_sim.optimizer import (
     _get_kama_periods_from_space,
     precompute_kama_caches,
 )
+from src.portfolio_sim.parallel import (
+    evaluate_combo,
+    init_eval_worker,
+    suggest_params,
+)
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics
 
 log = structlog.get_logger()
 
 # ---------------------------------------------------------------------------
-# Shared data for worker processes (initializer pattern)
-# ---------------------------------------------------------------------------
-_shared: dict = {}
-
-# ---------------------------------------------------------------------------
 # Default search space for max profit search
 # ---------------------------------------------------------------------------
 MAX_PROFIT_SPACE: dict[str, dict] = {
-    "kama_period": {"type": "categorical", "choices": [5, 10, 15, 20, 30]},
-    "lookback_period": {"type": "int", "low": 30, "high": 200, "step": 10},
-    "top_n": {"type": "int", "low": 3, "high": 15, "step": 2},
-    "kama_buffer": {"type": "float", "low": 0.003, "high": 0.02, "step": 0.001},
-    "use_risk_adjusted": {"type": "categorical", "choices": [True, False]},
+    "kama_period": {"type": "categorical", "choices": [10, 15, 20, 30]},
+    "lookback_period": {"type": "int", "low": 20, "high": 100, "step": 20},
+    "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
+    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
     "enable_regime_filter": {"type": "categorical", "choices": [True, False]},
-    "sizing_mode": {"type": "categorical", "choices": ["equal_weight", "risk_parity"]},
 }
 
 DEFAULT_MAX_PROFIT_TRIALS: int = 500
@@ -66,6 +68,7 @@ class MaxProfitResult:
     grid_results: pd.DataFrame
     default_metrics: dict
     default_params: StrategyParams
+    pareto_front: pd.DataFrame | None = None  # populated only for Pareto search
 
 
 # ---------------------------------------------------------------------------
@@ -89,94 +92,20 @@ def compute_cagr_objective(
     return cagr
 
 
-# ---------------------------------------------------------------------------
-# Search space helper with fixed param overrides
-# ---------------------------------------------------------------------------
-def _suggest_max_profit_params(
-    trial: optuna.Trial,
-    space: dict[str, dict],
-    fixed_params: dict | None = None,
-) -> StrategyParams:
-    """Suggest params from trial, with fixed overrides.
-
-    Parameters in fixed_params are not suggested by Optuna but set directly.
-    """
-    fixed_params = fixed_params or {}
-    kwargs = {}
-    for name, spec in space.items():
-        if name in fixed_params:
-            kwargs[name] = fixed_params[name]
-            continue
-        if spec["type"] == "categorical":
-            kwargs[name] = trial.suggest_categorical(name, spec["choices"])
-        elif spec["type"] == "int":
-            kwargs[name] = trial.suggest_int(
-                name, spec["low"], spec["high"], step=spec.get("step", 1),
-            )
-        elif spec["type"] == "float":
-            kwargs[name] = trial.suggest_float(
-                name, spec["low"], spec["high"], step=spec.get("step"),
-            )
-    kwargs.update(fixed_params)
-    return StrategyParams(**kwargs)
-
-
-# ---------------------------------------------------------------------------
-# Parallel evaluation helpers
-# ---------------------------------------------------------------------------
-def _init_max_profit_worker(
-    close_prices: pd.DataFrame,
-    open_prices: pd.DataFrame,
-    tickers: list[str],
-    initial_capital: float,
-    kama_caches: dict[int, dict[str, pd.Series]],
-):
-    """Initializer for max-profit search workers."""
-    _shared["close"] = close_prices
-    _shared["open"] = open_prices
-    _shared["tickers"] = tickers
-    _shared["capital"] = initial_capital
-    _shared["kama_caches"] = kama_caches
-
-
-def _evaluate_max_profit_combo(args: tuple[StrategyParams, float]) -> dict:
-    """Evaluate a single param combo, returning CAGR as the objective."""
-    params, max_dd_limit = args
-    try:
-        kama_cache = _shared["kama_caches"].get(params.kama_period)
-        result = run_simulation(
-            _shared["close"], _shared["open"], _shared["tickers"],
-            _shared["capital"], params=params, kama_cache=kama_cache,
-        )
-        equity = result.equity
-        if equity.empty:
-            obj = -999.0
-            metrics = {}
-        else:
-            obj = compute_cagr_objective(equity, max_dd_limit=max_dd_limit)
-            metrics = compute_metrics(equity)
-    except (ValueError, KeyError):
-        obj = -999.0
-        metrics = {}
-
-    return {
-        "kama_period": params.kama_period,
-        "lookback_period": params.lookback_period,
-        "top_n": params.top_n,
-        "kama_buffer": params.kama_buffer,
-        "use_risk_adjusted": params.use_risk_adjusted,
-        "enable_regime_filter": params.enable_regime_filter,
-        "sizing_mode": params.sizing_mode,
-        "enable_correlation_filter": params.enable_correlation_filter,
-        "objective_cagr": obj,
-        "total_return": metrics.get("total_return", 0.0),
-        "cagr": metrics.get("cagr", 0.0),
-        "max_drawdown": metrics.get("max_drawdown", 0.0),
-        "sharpe": metrics.get("sharpe", 0.0),
-        "calmar": metrics.get("calmar", 0.0),
-        "annualized_vol": metrics.get("annualized_vol", 0.0),
-        "win_rate": metrics.get("win_rate", 0.0),
-    }
+# Max-profit param/metric keys for evaluate_combo
+_MP_PARAM_KEYS = [
+    "kama_period", "lookback_period", "top_n", "kama_buffer",
+    "use_risk_adjusted", "enable_regime_filter", "sizing_mode",
+    "enable_correlation_filter",
+]
+_MP_METRIC_KEYS = [
+    "total_return", "cagr", "max_drawdown", "sharpe", "calmar",
+    "annualized_vol", "win_rate",
+]
+_MP_USER_ATTR_KEYS = _MP_METRIC_KEYS + [
+    "use_risk_adjusted", "enable_regime_filter", "sizing_mode",
+    "enable_correlation_filter",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -228,36 +157,46 @@ def run_max_profit_search(
     )
     default_metrics = compute_metrics(default_result.equity)
 
-    # Create ProcessPoolExecutor with initializer (shared data pattern)
-    executor = ProcessPoolExecutor(
-        max_workers=n_workers,
-        initializer=_init_max_profit_worker,
-        initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
-    )
-
-    pbar = tqdm(total=n_trials, desc=f"Optuna search ({universe})", unit="trial")
-
-    def objective(trial: optuna.Trial) -> float:
-        params = _suggest_max_profit_params(trial, space, fixed_params)
-        future = executor.submit(_evaluate_max_profit_combo, (params, max_dd_limit))
-        result = future.result()
-        for key in ("total_return", "cagr", "max_drawdown", "sharpe", "calmar",
-                     "annualized_vol", "win_rate"):
-            trial.set_user_attr(key, result.get(key, 0.0))
-        for key in ("use_risk_adjusted", "enable_regime_filter", "sizing_mode",
-                     "enable_correlation_filter"):
-            trial.set_user_attr(key, result.get(key))
-        pbar.update(1)
-        obj = result["objective_cagr"]
-        return obj if obj > -999.0 else float("-inf")
-
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     study = optuna.create_study(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
     )
-    study.optimize(objective, n_trials=n_trials, n_jobs=n_workers)
+
+    # Use ask/tell API with batch parallelism via ProcessPoolExecutor.
+    executor = ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=init_eval_worker,
+        initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
+    )
+
+    pbar = tqdm(total=n_trials, desc=f"Optuna search ({universe})", unit="trial")
+    trials_done = 0
+
+    while trials_done < n_trials:
+        batch_size = min(n_workers, n_trials - trials_done)
+        trials = [study.ask() for _ in range(batch_size)]
+        params_list = [suggest_params(t, space, fixed_params) for t in trials]
+
+        futures = {
+            executor.submit(
+                evaluate_combo,
+                (p, max_dd_limit, compute_cagr_objective, "objective_cagr",
+                 _MP_PARAM_KEYS, _MP_METRIC_KEYS),
+            ): (t, p)
+            for t, p in zip(trials, params_list)
+        }
+        for future in as_completed(futures):
+            trial, _ = futures[future]
+            result_dict = future.result()
+            obj = result_dict["objective_cagr"]
+            value = obj if obj > -999.0 else float("-inf")
+            for key in _MP_USER_ATTR_KEYS:
+                trial.set_user_attr(key, result_dict.get(key, 0.0))
+            study.tell(trial, value)
+            pbar.update(1)
+            trials_done += 1
 
     pbar.close()
     executor.shutdown(wait=True)
@@ -383,6 +322,232 @@ def format_max_profit_report(
             f"  Default Profit: ${default_profit:>10,.0f}  "
             f"|   Best Profit: ${best_profit:>10,.0f}"
         )
+
+    lines.append("")
+    lines.append("=" * 90)
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Multi-objective Pareto search (CAGR ↑, MaxDD ↓)
+# ---------------------------------------------------------------------------
+def _compute_pareto_objectives(
+    equity: pd.Series, max_dd_limit: float = 0.60,
+) -> tuple[float, float]:
+    """Return (CAGR, MaxDD) for multi-objective optimization.
+
+    Returns (−inf, +inf) for degenerate/rejected curves.
+    """
+    metrics = compute_metrics(equity)
+    if metrics["n_days"] < 60 or metrics["cagr"] <= 0:
+        return float("-inf"), float("inf")
+    return metrics["cagr"], metrics["max_drawdown"]
+
+
+def run_max_profit_pareto(
+    close_prices: pd.DataFrame,
+    open_prices: pd.DataFrame,
+    tickers: list[str],
+    initial_capital: float = INITIAL_CAPITAL,
+    universe: str = "etf",
+    default_params: StrategyParams | None = None,
+    space: dict[str, dict] | None = None,
+    fixed_params: dict | None = None,
+    n_trials: int = DEFAULT_MAX_PROFIT_TRIALS,
+    n_workers: int | None = None,
+) -> MaxProfitResult:
+    """Multi-objective search: maximize CAGR, minimize MaxDD (NSGA-II).
+
+    Returns a MaxProfitResult with the ``pareto_front`` field populated.
+    The ``grid_results`` DataFrame contains all trials, and the Pareto
+    front is the subset of non-dominated solutions.
+    """
+    default_params = default_params or StrategyParams()
+    space = space or MAX_PROFIT_SPACE
+    n_workers = n_workers or max(1, os.cpu_count() - 1)
+
+    log.info(
+        "pareto_start",
+        universe=universe,
+        n_trials=n_trials,
+        n_workers=n_workers,
+    )
+
+    # Pre-compute KAMA
+    kama_periods = _get_kama_periods_from_space(space)
+    kama_caches = precompute_kama_caches(
+        close_prices, tickers, kama_periods, n_workers,
+    )
+
+    # Default baseline
+    default_kama = kama_caches.get(default_params.kama_period)
+    default_result = run_simulation(
+        close_prices, open_prices, tickers, initial_capital,
+        params=default_params, kama_cache=default_kama,
+    )
+    default_metrics = compute_metrics(default_result.equity)
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    study = optuna.create_study(
+        directions=["maximize", "minimize"],  # CAGR ↑, MaxDD ↓
+        sampler=optuna.samplers.NSGAIISampler(seed=42),
+    )
+
+    executor = ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=init_eval_worker,
+        initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
+    )
+
+    pbar = tqdm(total=n_trials, desc=f"Pareto search ({universe})", unit="trial")
+    trials_done = 0
+
+    while trials_done < n_trials:
+        batch_size = min(n_workers, n_trials - trials_done)
+        trials = [study.ask() for _ in range(batch_size)]
+        params_list = [suggest_params(t, space, fixed_params) for t in trials]
+
+        # Reuse evaluate_combo which returns dict with cagr and max_drawdown
+        futures = {
+            executor.submit(
+                evaluate_combo,
+                (p, 1.0, compute_cagr_objective, "objective_cagr",
+                 _MP_PARAM_KEYS, _MP_METRIC_KEYS),
+            ): (t, p)
+            for t, p in zip(trials, params_list)
+        }
+        for future in as_completed(futures):
+            trial, _ = futures[future]
+            result_dict = future.result()
+            cagr = result_dict.get("cagr", 0.0)
+            maxdd = result_dict.get("max_drawdown", 0.0)
+
+            if cagr <= 0 or result_dict.get("objective_cagr", -999.0) <= -999.0:
+                values = [float("-inf"), float("inf")]
+            else:
+                values = [cagr, maxdd]
+
+            for key in _MP_USER_ATTR_KEYS:
+                trial.set_user_attr(key, result_dict.get(key, 0.0))
+            study.tell(trial, values)
+            pbar.update(1)
+            trials_done += 1
+
+    pbar.close()
+    executor.shutdown(wait=True)
+
+    # Extract all results
+    rows: list[dict] = []
+    for trial in study.trials:
+        if trial.state == optuna.trial.TrialState.COMPLETE:
+            row = dict(trial.params)
+            if trial.values and len(trial.values) == 2:
+                row["objective_cagr"] = trial.values[0] if trial.values[0] != float("-inf") else -999.0
+                row["objective_maxdd"] = trial.values[1] if trial.values[1] != float("inf") else 999.0
+            else:
+                row["objective_cagr"] = -999.0
+                row["objective_maxdd"] = 999.0
+            row.update(trial.user_attrs)
+            rows.append(row)
+
+    grid_df = pd.DataFrame(rows)
+
+    # Extract Pareto front
+    pareto_trials = study.best_trials
+    pareto_rows: list[dict] = []
+    for trial in pareto_trials:
+        row = dict(trial.params)
+        row["cagr"] = trial.values[0] if trial.values[0] != float("-inf") else -999.0
+        row["max_drawdown"] = trial.values[1] if trial.values[1] != float("inf") else 999.0
+        row.update(trial.user_attrs)
+        pareto_rows.append(row)
+
+    pareto_df = pd.DataFrame(pareto_rows) if pareto_rows else None
+
+    log.info(
+        "pareto_done",
+        universe=universe,
+        n_total=len(grid_df),
+        n_pareto=len(pareto_rows),
+    )
+
+    return MaxProfitResult(
+        universe=universe,
+        grid_results=grid_df,
+        default_metrics=default_metrics,
+        default_params=default_params,
+        pareto_front=pareto_df,
+    )
+
+
+def select_best_from_pareto(result: MaxProfitResult) -> StrategyParams | None:
+    """Select the trial with the best Calmar ratio from the Pareto front."""
+    pf = result.pareto_front
+    if pf is None or pf.empty:
+        return None
+
+    valid = pf[(pf["cagr"] > 0) & (pf["max_drawdown"] > 0)]
+    if valid.empty:
+        return None
+
+    valid = valid.copy()
+    valid["calmar"] = valid["cagr"] / valid["max_drawdown"]
+    best = valid.loc[valid["calmar"].idxmax()]
+
+    kwargs = {}
+    for key in _MP_PARAM_KEYS:
+        if key in best.index:
+            kwargs[key] = best[key]
+    return StrategyParams(**kwargs)
+
+
+def format_pareto_report(result: MaxProfitResult, top_n: int = 20) -> str:
+    """Format a human-readable Pareto front report."""
+    lines: list[str] = []
+    lines.append("=" * 90)
+    lines.append(f"PARETO FRONT SEARCH — {result.universe.upper()} Universe")
+    lines.append("=" * 90)
+
+    # Default baseline
+    dm = result.default_metrics
+    lines.append("")
+    lines.append(f"Default CAGR: {dm['cagr']:.2%}  Max DD: {dm['max_drawdown']:.2%}  "
+                 f"Sharpe: {dm['sharpe']:.2f}")
+
+    # Summary
+    grid_df = result.grid_results
+    valid = grid_df[grid_df.get("objective_cagr", grid_df.get("cagr", pd.Series(dtype=float))) > -999.0]
+    lines.append(f"Trials: {len(grid_df)} evaluated, {len(valid)} valid")
+
+    pf = result.pareto_front
+    if pf is not None and not pf.empty:
+        lines.append(f"Pareto front: {len(pf)} non-dominated solutions")
+
+        lines.append("")
+        lines.append("-" * 90)
+        lines.append(f"Pareto Front (top {min(top_n, len(pf))} by Calmar ratio):")
+        lines.append("-" * 90)
+
+        pf_display = pf[(pf["cagr"] > 0) & (pf["max_drawdown"] > 0)].copy()
+        if not pf_display.empty:
+            pf_display["calmar"] = pf_display["cagr"] / pf_display["max_drawdown"]
+            pf_display = pf_display.nlargest(top_n, "calmar")
+
+            header = (
+                f"  {'#':>3} {'kama':>5} {'lbk':>5} {'top_n':>5} {'buf':>7} "
+                f"{'CAGR':>8} {'MaxDD':>8} {'Calmar':>8} {'Sharpe':>7}"
+            )
+            lines.append(header)
+            lines.append("  " + "-" * 70)
+            for rank, (_, row) in enumerate(pf_display.iterrows(), 1):
+                lines.append(
+                    f"  {rank:>3} {int(row['kama_period']):>5} "
+                    f"{int(row['lookback_period']):>5} "
+                    f"{int(row['top_n']):>5} {row['kama_buffer']:>7.4f} "
+                    f"{row['cagr']:>8.2%} {row['max_drawdown']:>8.2%} "
+                    f"{row['calmar']:>8.2f} {row.get('sharpe', 0):>7.2f}"
+                )
 
     lines.append("")
     lines.append("=" * 90)

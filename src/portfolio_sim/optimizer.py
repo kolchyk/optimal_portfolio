@@ -23,18 +23,18 @@ import structlog
 from tqdm import tqdm
 
 from src.portfolio_sim.config import INITIAL_CAPITAL, SPY_TICKER
-from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.indicators import compute_kama_series
+from src.portfolio_sim.parallel import (
+    _shared,
+    evaluate_combo,
+    init_eval_worker,
+    suggest_params,
+)
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics
 
 log = structlog.get_logger()
 
-# ---------------------------------------------------------------------------
-# Shared data for worker processes (initializer pattern avoids repeated
-# pickling of large DataFrames — sent once per worker, not once per task).
-# ---------------------------------------------------------------------------
-_shared: dict = {}
 
 # ---------------------------------------------------------------------------
 # Default search space for sensitivity analysis
@@ -141,29 +141,6 @@ def precompute_kama_caches(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Optuna search space helpers
-# ---------------------------------------------------------------------------
-def _suggest_params(
-    trial: optuna.Trial,
-    space: dict[str, dict],
-) -> StrategyParams:
-    """Suggest a StrategyParams from an Optuna trial."""
-    kwargs = {}
-    for name, spec in space.items():
-        if spec["type"] == "categorical":
-            kwargs[name] = trial.suggest_categorical(name, spec["choices"])
-        elif spec["type"] == "int":
-            kwargs[name] = trial.suggest_int(
-                name, spec["low"], spec["high"], step=spec.get("step", 1),
-            )
-        elif spec["type"] == "float":
-            kwargs[name] = trial.suggest_float(
-                name, spec["low"], spec["high"], step=spec.get("step"),
-            )
-    return StrategyParams(**kwargs)
-
-
 def _get_kama_periods_from_space(space: dict[str, dict]) -> list[int]:
     """Extract all possible kama_period values from a search space definition."""
     spec = space.get("kama_period", {})
@@ -176,58 +153,9 @@ def _get_kama_periods_from_space(space: dict[str, dict]) -> list[int]:
     ))
 
 
-# ---------------------------------------------------------------------------
-# Parallel evaluation helpers
-# ---------------------------------------------------------------------------
-def _init_sensitivity_worker(
-    close_prices: pd.DataFrame,
-    open_prices: pd.DataFrame,
-    tickers: list[str],
-    initial_capital: float,
-    kama_caches: dict[int, dict[str, pd.Series]],
-):
-    """Initializer for sensitivity workers."""
-    _shared["close"] = close_prices
-    _shared["open"] = open_prices
-    _shared["tickers"] = tickers
-    _shared["capital"] = initial_capital
-    _shared["kama_caches"] = kama_caches
-
-
-def _evaluate_combo(args: tuple[StrategyParams, float]) -> dict:
-    """Evaluate a single param combo on the full dataset.
-
-    Returns a dict with parameter values, objective, and key metrics.
-    """
-    params, max_dd_limit = args
-    try:
-        kama_cache = _shared["kama_caches"].get(params.kama_period)
-        result = run_simulation(
-            _shared["close"], _shared["open"], _shared["tickers"],
-            _shared["capital"], params=params, kama_cache=kama_cache,
-        )
-        equity = result.equity
-        if equity.empty:
-            obj = -999.0
-            metrics = {}
-        else:
-            obj = compute_objective(equity, max_dd_limit=max_dd_limit)
-            metrics = compute_metrics(equity)
-    except (ValueError, KeyError):
-        obj = -999.0
-        metrics = {}
-
-    return {
-        "kama_period": params.kama_period,
-        "lookback_period": params.lookback_period,
-        "kama_buffer": params.kama_buffer,
-        "top_n": params.top_n,
-        "objective": obj,
-        "cagr": metrics.get("cagr", 0.0),
-        "max_drawdown": metrics.get("max_drawdown", 0.0),
-        "sharpe": metrics.get("sharpe", 0.0),
-        "calmar": metrics.get("calmar", 0.0),
-    }
+# Sensitivity param/metric keys for evaluate_combo
+_SENS_PARAM_KEYS = ["kama_period", "lookback_period", "kama_buffer", "top_n"]
+_SENS_METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]
 
 
 # ---------------------------------------------------------------------------
@@ -333,25 +261,6 @@ def run_sensitivity(
     kama_caches = precompute_kama_caches(close_prices, tickers, kama_periods, n_workers)
     log.info("kama_precomputed", n_periods=len(kama_caches))
 
-    # Create ProcessPoolExecutor with initializer (shared data pattern)
-    executor = ProcessPoolExecutor(
-        max_workers=n_workers,
-        initializer=_init_sensitivity_worker,
-        initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
-    )
-
-    pbar = tqdm(total=n_trials, desc="Sensitivity trials", unit="trial")
-
-    def objective(trial: optuna.Trial) -> float:
-        params = _suggest_params(trial, space)
-        future = executor.submit(_evaluate_combo, (params, max_dd_limit))
-        result = future.result()
-        for key in ("cagr", "max_drawdown", "sharpe", "calmar"):
-            trial.set_user_attr(key, result.get(key, 0.0))
-        pbar.update(1)
-        obj = result["objective"]
-        return obj if obj > -999.0 else float("-inf")
-
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     study = optuna.create_study(
@@ -367,7 +276,41 @@ def run_sensitivity(
         "top_n": base_params.top_n,
     })
 
-    study.optimize(objective, n_trials=n_trials, n_jobs=n_workers)
+    # Use ask/tell API with batch parallelism via ProcessPoolExecutor.
+    # This avoids the overhead of Optuna's internal threading (n_jobs)
+    # while keeping full process-level parallelism for CPU-bound simulations.
+    executor = ProcessPoolExecutor(
+        max_workers=n_workers,
+        initializer=init_eval_worker,
+        initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
+    )
+
+    pbar = tqdm(total=n_trials, desc="Sensitivity trials", unit="trial")
+    trials_done = 0
+
+    while trials_done < n_trials:
+        batch_size = min(n_workers, n_trials - trials_done)
+        trials = [study.ask() for _ in range(batch_size)]
+        params_list = [suggest_params(t, space) for t in trials]
+
+        futures = {
+            executor.submit(
+                evaluate_combo,
+                (p, max_dd_limit, compute_objective, "objective",
+                 _SENS_PARAM_KEYS, _SENS_METRIC_KEYS),
+            ): (t, p)
+            for t, p in zip(trials, params_list)
+        }
+        for future in as_completed(futures):
+            trial, _ = futures[future]
+            result_dict = future.result()
+            obj = result_dict["objective"]
+            value = obj if obj > -999.0 else float("-inf")
+            for key in _SENS_METRIC_KEYS:
+                trial.set_user_attr(key, result_dict.get(key, 0.0))
+            study.tell(trial, value)
+            pbar.update(1)
+            trials_done += 1
 
     pbar.close()
     executor.shutdown(wait=True)

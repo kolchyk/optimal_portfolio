@@ -12,6 +12,7 @@ import scipy.optimize as sco
 import streamlit as st
 import structlog
 
+from src.portfolio_sim.cli_utils import filter_valid_tickers
 from src.portfolio_sim.config import (
     CORRELATION_LOOKBACK,
     CORRELATION_THRESHOLD,
@@ -783,7 +784,7 @@ def _render_sidebar() -> dict:
         auto_optimize = st.toggle(
             "Auto-optimize parameters",
             value=False,
-            help="Run a quick 81-combo grid search to find optimal parameters "
+            help="Run a quick 50-trial Optuna search to find optimal parameters "
                  "before running the backtest.",
         )
 
@@ -955,21 +956,32 @@ def main():
         )
 
         min_days = int(sidebar["data_years"] * 252 * 0.6)
-        # In ETF mode, SPY is tradable — do not exclude it
-        valid = [
-            t for t in close_prices.columns
-            if len(close_prices[t].dropna()) >= min_days
-        ]
+        valid = filter_valid_tickers(close_prices, min_days)
 
-        # Auto-optimize: run quick grid search before simulation
+        # Base param kwargs shared across all branches
+        common_kwargs = dict(
+            use_risk_adjusted=sidebar["use_risk_adjusted"],
+            enable_regime_filter=sidebar["enable_regime"],
+            enable_correlation_filter=sidebar["enable_correlation"],
+            correlation_threshold=sidebar["corr_threshold"],
+            correlation_lookback=sidebar["corr_lookback"],
+            sizing_mode=sidebar["sizing_mode"],
+            volatility_lookback=sidebar["vol_lookback"],
+            max_weight=sidebar["max_weight"],
+        )
+
+        # Auto-optimize: run quick Optuna search before simulation
+        best = None
         if sidebar["auto_optimize"]:
-            with st.spinner("Auto-optimizing parameters (81 combos)..."):
+            with st.spinner("Auto-optimizing parameters (50 Optuna trials)..."):
                 from src.portfolio_sim.optimizer import (
-                    QUICK_GRID, find_best_params, run_sensitivity,
+                    find_best_params, run_sensitivity,
                 )
                 opt_result = run_sensitivity(
                     close_prices, open_prices, valid,
-                    sidebar["initial_capital"], grid=QUICK_GRID,
+                    sidebar["initial_capital"],
+                    n_trials=50,
+                    n_workers=-1,
                 )
                 best = find_best_params(opt_result)
             if best is not None:
@@ -981,52 +993,25 @@ def main():
                     f"Top N={best.top_n}",
                     icon="✅",
                 )
-                # Use optimized params for this run
-                params = StrategyParams(
-                    kama_period=best.kama_period,
-                    lookback_period=best.lookback_period,
-                    top_n=best.top_n,
-                    kama_buffer=best.kama_buffer,
-                    use_risk_adjusted=sidebar["use_risk_adjusted"],
-                    enable_regime_filter=sidebar["enable_regime"],
-                    enable_correlation_filter=sidebar["enable_correlation"],
-                    correlation_threshold=sidebar["corr_threshold"],
-                    correlation_lookback=sidebar["corr_lookback"],
-                    sizing_mode=sidebar["sizing_mode"],
-                    volatility_lookback=sidebar["vol_lookback"],
-                    max_weight=sidebar["max_weight"],
-                )
             else:
                 st.warning("Auto-optimization found no valid combinations. Using manual parameters.")
-                params = StrategyParams(
-                    kama_period=sidebar["kama_period"],
-                    lookback_period=sidebar["lookback_period"],
-                    top_n=sidebar["top_n"],
-                    kama_buffer=sidebar["kama_buffer"],
-                    use_risk_adjusted=sidebar["use_risk_adjusted"],
-                    enable_regime_filter=sidebar["enable_regime"],
-                    enable_correlation_filter=sidebar["enable_correlation"],
-                    correlation_threshold=sidebar["corr_threshold"],
-                    correlation_lookback=sidebar["corr_lookback"],
-                    sizing_mode=sidebar["sizing_mode"],
-                    volatility_lookback=sidebar["vol_lookback"],
-                    max_weight=sidebar["max_weight"],
-                )
+
+        if best is not None:
+            common_kwargs.update(
+                kama_period=best.kama_period,
+                lookback_period=best.lookback_period,
+                top_n=best.top_n,
+                kama_buffer=best.kama_buffer,
+            )
         else:
-            params = StrategyParams(
+            common_kwargs.update(
                 kama_period=sidebar["kama_period"],
                 lookback_period=sidebar["lookback_period"],
                 top_n=sidebar["top_n"],
                 kama_buffer=sidebar["kama_buffer"],
-                use_risk_adjusted=sidebar["use_risk_adjusted"],
-                enable_regime_filter=sidebar["enable_regime"],
-                enable_correlation_filter=sidebar["enable_correlation"],
-                correlation_threshold=sidebar["corr_threshold"],
-                correlation_lookback=sidebar["corr_lookback"],
-                sizing_mode=sidebar["sizing_mode"],
-                volatility_lookback=sidebar["vol_lookback"],
-                max_weight=sidebar["max_weight"],
             )
+
+        params = StrategyParams(**common_kwargs)
 
         with st.spinner(f"Running simulation on {len(valid)} tickers..."):
             result = run_simulation(
