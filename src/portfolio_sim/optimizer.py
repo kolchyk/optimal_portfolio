@@ -1,24 +1,23 @@
 """Parameter sensitivity analysis for KAMA momentum strategy.
 
-Replaces walk-forward optimization with a simpler robustness check:
-run a coarse parameter grid on the full dataset and verify that
-performance is stable across a wide range of parameter values.
+Uses Optuna TPE sampler to efficiently explore the parameter space
+and verify that performance is stable across a wide range of values.
 
 Key difference from optimization:
   - Goal is NOT to find "best" parameters (that leads to overfitting).
   - Goal is to confirm chosen defaults sit on a flat performance plateau.
-  - If performance varies wildly across the grid → strategy is fragile.
+  - If performance varies wildly across the space → strategy is fragile.
   - If performance is stable → parameters are robust, defaults are fine.
 """
 
 from __future__ import annotations
 
-import itertools
 import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import numpy as np
+import optuna
 import pandas as pd
 import structlog
 from tqdm import tqdm
@@ -38,21 +37,16 @@ log = structlog.get_logger()
 _shared: dict = {}
 
 # ---------------------------------------------------------------------------
-# Default sensitivity grid (5 values per parameter = 625 combinations)
+# Default search space for sensitivity analysis
 # ---------------------------------------------------------------------------
-SENSITIVITY_GRID: dict[str, list] = {
-    "kama_period": [10, 15, 20, 30, 40],
-    "lookback_period": [20, 40, 60, 90, 120],
-    "kama_buffer": [0.005, 0.01, 0.015, 0.02, 0.03],
-    "top_n": [10, 15, 20, 25, 30],
+SENSITIVITY_SPACE: dict[str, dict] = {
+    "kama_period": {"type": "categorical", "choices": [10, 15, 20, 30, 40]},
+    "lookback_period": {"type": "int", "low": 20, "high": 120, "step": 10},
+    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
+    "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
 }
 
-QUICK_GRID: dict[str, list] = {
-    "kama_period": [10, 20, 40],
-    "lookback_period": [40, 90, 150],
-    "kama_buffer": [0.005, 0.01, 0.02],
-    "top_n": [5, 10, 15],
-}
+DEFAULT_N_TRIALS: int = 200
 
 PARAM_NAMES: list[str] = ["kama_period", "lookback_period", "kama_buffer", "top_n"]
 
@@ -62,10 +56,10 @@ PARAM_NAMES: list[str] = ["kama_period", "lookback_period", "kama_buffer", "top_
 # ---------------------------------------------------------------------------
 @dataclass
 class SensitivityResult:
-    """Results from a full-grid sensitivity analysis."""
+    """Results from a sensitivity analysis."""
 
     grid_results: pd.DataFrame
-    """All combo results: columns = param names + objective + metrics."""
+    """All trial results: columns = param names + objective + metrics."""
 
     marginal_profiles: dict[str, pd.DataFrame]
     """1D marginal profiles: for each parameter, mean objective per value."""
@@ -148,16 +142,38 @@ def precompute_kama_caches(
 
 
 # ---------------------------------------------------------------------------
-# Grid construction
+# Optuna search space helpers
 # ---------------------------------------------------------------------------
-def build_param_grid(
-    grid: dict[str, list] | None = None,
-) -> list[StrategyParams]:
-    """Expand a parameter grid dict into a list of StrategyParams."""
-    grid = grid or SENSITIVITY_GRID
-    keys = sorted(grid.keys())
-    combos = list(itertools.product(*(grid[k] for k in keys)))
-    return [StrategyParams(**dict(zip(keys, vals))) for vals in combos]
+def _suggest_params(
+    trial: optuna.Trial,
+    space: dict[str, dict],
+) -> StrategyParams:
+    """Suggest a StrategyParams from an Optuna trial."""
+    kwargs = {}
+    for name, spec in space.items():
+        if spec["type"] == "categorical":
+            kwargs[name] = trial.suggest_categorical(name, spec["choices"])
+        elif spec["type"] == "int":
+            kwargs[name] = trial.suggest_int(
+                name, spec["low"], spec["high"], step=spec.get("step", 1),
+            )
+        elif spec["type"] == "float":
+            kwargs[name] = trial.suggest_float(
+                name, spec["low"], spec["high"], step=spec.get("step"),
+            )
+    return StrategyParams(**kwargs)
+
+
+def _get_kama_periods_from_space(space: dict[str, dict]) -> list[int]:
+    """Extract all possible kama_period values from a search space definition."""
+    spec = space.get("kama_period", {})
+    if spec.get("type") == "categorical":
+        return list(spec["choices"])
+    return list(range(
+        spec.get("low", 10),
+        spec.get("high", 40) + 1,
+        spec.get("step", 5),
+    ))
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +186,7 @@ def _init_sensitivity_worker(
     initial_capital: float,
     kama_caches: dict[int, dict[str, pd.Series]],
 ):
-    """Initializer for sensitivity grid-search workers."""
+    """Initializer for sensitivity workers."""
     _shared["close"] = close_prices
     _shared["open"] = open_prices
     _shared["tickers"] = tickers
@@ -286,15 +302,16 @@ def run_sensitivity(
     tickers: list[str],
     initial_capital: float = INITIAL_CAPITAL,
     base_params: StrategyParams | None = None,
-    grid: dict[str, list] | None = None,
+    space: dict[str, dict] | None = None,
+    n_trials: int = DEFAULT_N_TRIALS,
     n_workers: int | None = None,
     max_dd_limit: float = 0.30,
 ) -> SensitivityResult:
-    """Run parameter sensitivity analysis on the full dataset.
+    """Run parameter sensitivity analysis using Optuna TPE sampler.
 
-    1. Expand grid into all combinations.
-    2. Pre-compute KAMA for all unique periods (parallel).
-    3. Evaluate each combination in parallel on the full date range.
+    1. Pre-compute KAMA for all possible kama_period values (parallel).
+    2. Use Optuna to sample parameter combinations efficiently.
+    3. Evaluate each combination in parallel via ProcessPoolExecutor.
     4. Compute 1D marginal profiles (mean objective per parameter value).
     5. Score robustness: flat profile = robust parameter.
 
@@ -302,41 +319,68 @@ def run_sensitivity(
     is stable across parameter values, not to find the "best" combo.
     """
     base_params = base_params or StrategyParams()
-    grid = grid or SENSITIVITY_GRID
-    all_params = build_param_grid(grid)
+    space = space or SENSITIVITY_SPACE
     n_workers = n_workers or max(1, os.cpu_count() - 1)
 
     log.info(
         "sensitivity_start",
-        n_combos=len(all_params),
+        n_trials=n_trials,
         n_workers=n_workers,
     )
 
-    # Pre-compute KAMA for all unique periods
-    kama_periods = list(set(grid.get("kama_period", [base_params.kama_period])))
+    # Pre-compute KAMA for all possible kama_period values
+    kama_periods = _get_kama_periods_from_space(space)
     kama_caches = precompute_kama_caches(close_prices, tickers, kama_periods, n_workers)
     log.info("kama_precomputed", n_periods=len(kama_caches))
 
-    # Evaluate all combos in parallel
-    rows: list[dict] = []
-
-    with ProcessPoolExecutor(
+    # Create ProcessPoolExecutor with initializer (shared data pattern)
+    executor = ProcessPoolExecutor(
         max_workers=n_workers,
         initializer=_init_sensitivity_worker,
         initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
-    ) as executor:
-        futures = {
-            executor.submit(_evaluate_combo, (p, max_dd_limit)): p
-            for p in all_params
-        }
-        bar = tqdm(
-            as_completed(futures),
-            total=len(all_params),
-            desc="Sensitivity grid",
-            unit="combo",
-        )
-        for future in bar:
-            rows.append(future.result())
+    )
+
+    pbar = tqdm(total=n_trials, desc="Sensitivity trials", unit="trial")
+
+    def objective(trial: optuna.Trial) -> float:
+        params = _suggest_params(trial, space)
+        future = executor.submit(_evaluate_combo, (params, max_dd_limit))
+        result = future.result()
+        for key in ("cagr", "max_drawdown", "sharpe", "calmar"):
+            trial.set_user_attr(key, result.get(key, 0.0))
+        pbar.update(1)
+        obj = result["objective"]
+        return obj if obj > -999.0 else float("-inf")
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+    )
+
+    # Enqueue base params as first trial to guarantee base_objective
+    study.enqueue_trial({
+        "kama_period": base_params.kama_period,
+        "lookback_period": base_params.lookback_period,
+        "kama_buffer": base_params.kama_buffer,
+        "top_n": base_params.top_n,
+    })
+
+    study.optimize(objective, n_trials=n_trials, n_jobs=n_workers)
+
+    pbar.close()
+    executor.shutdown(wait=True)
+
+    # Extract results into DataFrame
+    rows: list[dict] = []
+    for trial in study.trials:
+        if trial.state == optuna.trial.TrialState.COMPLETE:
+            row = dict(trial.params)
+            obj_val = trial.value
+            row["objective"] = obj_val if obj_val != float("-inf") else -999.0
+            row.update(trial.user_attrs)
+            rows.append(row)
 
     grid_df = pd.DataFrame(rows)
 
@@ -392,13 +436,13 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
     if not np.isnan(result.base_objective):
         lines.append(f"  base objective:  {result.base_objective:.4f}")
     else:
-        lines.append("  base objective:  N/A (base combo not in grid)")
+        lines.append("  base objective:  N/A (base combo not in trials)")
 
-    # Grid summary
+    # Trials summary
     grid_df = result.grid_results
     valid = grid_df[grid_df["objective"] > -999.0]
     lines.append("")
-    lines.append(f"Grid: {len(grid_df)} combinations evaluated, "
+    lines.append(f"Trials: {len(grid_df)} evaluated, "
                  f"{len(valid)} valid ({len(valid)/len(grid_df):.0%})")
 
     if not valid.empty:
@@ -479,7 +523,7 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
 
 
 def find_best_params(result: SensitivityResult) -> StrategyParams | None:
-    """Extract the best parameter combo from sensitivity grid results.
+    """Extract the best parameter combo from sensitivity results.
 
     Returns StrategyParams for the combo with highest objective,
     or None if no valid combo was found.

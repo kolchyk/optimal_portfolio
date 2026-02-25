@@ -2,24 +2,27 @@
 
 Unlike the sensitivity analysis in optimizer.py (which checks robustness),
 this module searches for the parameter combination that maximizes CAGR
-over a given period. The drawdown rejection limit is relaxed to 60%.
+over a given period using Optuna's TPE sampler. The drawdown rejection
+limit is relaxed to 60%.
 """
 
 from __future__ import annotations
 
-import itertools
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
-import numpy as np
+import optuna
 import pandas as pd
 import structlog
 from tqdm import tqdm
 
 from src.portfolio_sim.config import INITIAL_CAPITAL
 from src.portfolio_sim.engine import run_simulation
-from src.portfolio_sim.optimizer import precompute_kama_caches
+from src.portfolio_sim.optimizer import (
+    _get_kama_periods_from_space,
+    precompute_kama_caches,
+)
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics
 
@@ -31,17 +34,19 @@ log = structlog.get_logger()
 _shared: dict = {}
 
 # ---------------------------------------------------------------------------
-# Default grid: 5×6×5×5×2×2×2 = 6,000 combinations
+# Default search space for max profit search
 # ---------------------------------------------------------------------------
-MAX_PROFIT_GRID: dict[str, list] = {
-    "kama_period": [5, 10, 15, 20, 30],
-    "lookback_period": [30, 60, 90, 120, 150, 200],
-    "top_n": [3, 5, 7, 10, 15],
-    "kama_buffer": [0.003, 0.005, 0.008, 0.012, 0.02],
-    "use_risk_adjusted": [True, False],
-    "enable_regime_filter": [True, False],
-    "sizing_mode": ["equal_weight", "risk_parity"],
+MAX_PROFIT_SPACE: dict[str, dict] = {
+    "kama_period": {"type": "categorical", "choices": [5, 10, 15, 20, 30]},
+    "lookback_period": {"type": "int", "low": 30, "high": 200, "step": 10},
+    "top_n": {"type": "int", "low": 3, "high": 15, "step": 2},
+    "kama_buffer": {"type": "float", "low": 0.003, "high": 0.02, "step": 0.001},
+    "use_risk_adjusted": {"type": "categorical", "choices": [True, False]},
+    "enable_regime_filter": {"type": "categorical", "choices": [True, False]},
+    "sizing_mode": {"type": "categorical", "choices": ["equal_weight", "risk_parity"]},
 }
+
+DEFAULT_MAX_PROFIT_TRIALS: int = 500
 
 ALL_PARAM_NAMES: list[str] = [
     "kama_period", "lookback_period", "top_n", "kama_buffer",
@@ -55,7 +60,7 @@ ALL_PARAM_NAMES: list[str] = [
 # ---------------------------------------------------------------------------
 @dataclass
 class MaxProfitResult:
-    """Results from a max-profit parameter grid search."""
+    """Results from a max-profit parameter search."""
 
     universe: str
     grid_results: pd.DataFrame
@@ -85,22 +90,35 @@ def compute_cagr_objective(
 
 
 # ---------------------------------------------------------------------------
-# Grid construction (supports booleans and fixed per-universe overrides)
+# Search space helper with fixed param overrides
 # ---------------------------------------------------------------------------
-def build_full_param_grid(
-    grid: dict[str, list],
+def _suggest_max_profit_params(
+    trial: optuna.Trial,
+    space: dict[str, dict],
     fixed_params: dict | None = None,
-) -> list[StrategyParams]:
-    """Expand grid into StrategyParams with optional fixed overrides."""
+) -> StrategyParams:
+    """Suggest params from trial, with fixed overrides.
+
+    Parameters in fixed_params are not suggested by Optuna but set directly.
+    """
     fixed_params = fixed_params or {}
-    keys = sorted(grid.keys())
-    combos = list(itertools.product(*(grid[k] for k in keys)))
-    params_list = []
-    for vals in combos:
-        d = dict(zip(keys, vals))
-        d.update(fixed_params)
-        params_list.append(StrategyParams(**d))
-    return params_list
+    kwargs = {}
+    for name, spec in space.items():
+        if name in fixed_params:
+            kwargs[name] = fixed_params[name]
+            continue
+        if spec["type"] == "categorical":
+            kwargs[name] = trial.suggest_categorical(name, spec["choices"])
+        elif spec["type"] == "int":
+            kwargs[name] = trial.suggest_int(
+                name, spec["low"], spec["high"], step=spec.get("step", 1),
+            )
+        elif spec["type"] == "float":
+            kwargs[name] = trial.suggest_float(
+                name, spec["low"], spec["high"], step=spec.get("step"),
+            )
+    kwargs.update(fixed_params)
+    return StrategyParams(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +131,7 @@ def _init_max_profit_worker(
     initial_capital: float,
     kama_caches: dict[int, dict[str, pd.Series]],
 ):
-    """Initializer for max-profit grid-search workers."""
+    """Initializer for max-profit search workers."""
     _shared["close"] = close_prices
     _shared["open"] = open_prices
     _shared["tickers"] = tickers
@@ -171,32 +189,32 @@ def run_max_profit_search(
     initial_capital: float = INITIAL_CAPITAL,
     universe: str = "sp500",
     default_params: StrategyParams | None = None,
-    grid: dict[str, list] | None = None,
+    space: dict[str, dict] | None = None,
     fixed_params: dict | None = None,
+    n_trials: int = DEFAULT_MAX_PROFIT_TRIALS,
     n_workers: int | None = None,
     max_dd_limit: float = 0.60,
 ) -> MaxProfitResult:
-    """Search parameter grid for maximum CAGR.
+    """Search parameter space for maximum CAGR using Optuna TPE.
 
-    1. Expand grid into all combinations (with fixed overrides).
-    2. Pre-compute KAMA for all unique periods (parallel).
-    3. Evaluate each combination in parallel.
+    1. Pre-compute KAMA for all possible kama_period values (parallel).
+    2. Use Optuna TPE sampler to explore the parameter space efficiently.
+    3. Evaluate each combination in parallel via ProcessPoolExecutor.
     4. Return results sorted by CAGR.
     """
     default_params = default_params or StrategyParams()
-    grid = grid or MAX_PROFIT_GRID
-    all_params = build_full_param_grid(grid, fixed_params)
+    space = space or MAX_PROFIT_SPACE
     n_workers = n_workers or max(1, os.cpu_count() - 1)
 
     log.info(
         "max_profit_start",
         universe=universe,
-        n_combos=len(all_params),
+        n_trials=n_trials,
         n_workers=n_workers,
     )
 
-    # Pre-compute KAMA for all unique periods
-    kama_periods = list(set(p.kama_period for p in all_params))
+    # Pre-compute KAMA for all possible kama_period values
+    kama_periods = _get_kama_periods_from_space(space)
     kama_caches = precompute_kama_caches(
         close_prices, tickers, kama_periods, n_workers,
     )
@@ -210,29 +228,49 @@ def run_max_profit_search(
     )
     default_metrics = compute_metrics(default_result.equity)
 
-    # Evaluate all combos in parallel
-    rows: list[dict] = []
-
-    with ProcessPoolExecutor(
+    # Create ProcessPoolExecutor with initializer (shared data pattern)
+    executor = ProcessPoolExecutor(
         max_workers=n_workers,
         initializer=_init_max_profit_worker,
         initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
-    ) as executor:
-        futures = {
-            executor.submit(_evaluate_max_profit_combo, (p, max_dd_limit)): p
-            for p in all_params
-        }
-        bar = tqdm(
-            as_completed(futures),
-            total=len(all_params),
-            desc=f"Grid search ({universe})",
-            unit="combo",
-        )
-        for future in bar:
-            try:
-                rows.append(future.result())
-            except Exception as exc:
-                log.warning("combo_failed", error=str(exc))
+    )
+
+    pbar = tqdm(total=n_trials, desc=f"Optuna search ({universe})", unit="trial")
+
+    def objective(trial: optuna.Trial) -> float:
+        params = _suggest_max_profit_params(trial, space, fixed_params)
+        future = executor.submit(_evaluate_max_profit_combo, (params, max_dd_limit))
+        result = future.result()
+        for key in ("total_return", "cagr", "max_drawdown", "sharpe", "calmar",
+                     "annualized_vol", "win_rate"):
+            trial.set_user_attr(key, result.get(key, 0.0))
+        for key in ("use_risk_adjusted", "enable_regime_filter", "sizing_mode",
+                     "enable_correlation_filter"):
+            trial.set_user_attr(key, result.get(key))
+        pbar.update(1)
+        obj = result["objective_cagr"]
+        return obj if obj > -999.0 else float("-inf")
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+    study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=42),
+    )
+    study.optimize(objective, n_trials=n_trials, n_jobs=n_workers)
+
+    pbar.close()
+    executor.shutdown(wait=True)
+
+    # Extract results into DataFrame
+    rows: list[dict] = []
+    for trial in study.trials:
+        if trial.state == optuna.trial.TrialState.COMPLETE:
+            row = dict(trial.params)
+            obj_val = trial.value
+            row["objective_cagr"] = obj_val if obj_val != float("-inf") else -999.0
+            row.update(trial.user_attrs)
+            rows.append(row)
 
     grid_df = pd.DataFrame(rows)
 
@@ -282,12 +320,12 @@ def format_max_profit_report(
         f"Max DD: {dm['max_drawdown']:.2%}  Sharpe: {dm['sharpe']:.2f}"
     )
 
-    # Grid summary
+    # Trials summary
     grid_df = result.grid_results
     valid = grid_df[grid_df["objective_cagr"] > -999.0]
     lines.append("")
     lines.append(
-        f"Grid: {len(grid_df)} combinations evaluated, "
+        f"Trials: {len(grid_df)} evaluated, "
         f"{len(valid)} valid ({len(valid) / len(grid_df):.0%})"
     )
 

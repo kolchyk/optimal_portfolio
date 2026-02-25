@@ -20,7 +20,6 @@ from src.portfolio_sim.config import INITIAL_CAPITAL
 from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data, fetch_sp500_tickers
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.max_profit import (
-    MaxProfitResult,
     format_max_profit_report,
     run_max_profit_search,
 )
@@ -51,6 +50,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-dd", type=float, default=0.60,
         help="Max drawdown rejection limit (default: 0.60 = 60%%)",
+    )
+    parser.add_argument(
+        "--n-trials", type=int, default=500,
+        help="Number of Optuna trials per universe (default: 500)",
     )
     return parser.parse_args()
 
@@ -131,9 +134,9 @@ def main():
             sp500_params, "S&P 500",
         )
 
-        # Part 2: Grid search
+        # Part 2: Optuna search
         print(f"\n{'=' * 70}")
-        print("GRID SEARCH — S&P 500 (6,000 combinations)")
+        print(f"OPTUNA SEARCH — S&P 500 ({args.n_trials} trials)")
         print(f"{'=' * 70}\n")
 
         sp500_result = run_max_profit_search(
@@ -141,6 +144,7 @@ def main():
             universe="sp500",
             default_params=sp500_params,
             fixed_params={"enable_correlation_filter": False},
+            n_trials=args.n_trials,
             n_workers=args.n_workers,
             max_dd_limit=args.max_dd,
         )
@@ -189,9 +193,9 @@ def main():
             etf_params, "Cross-Asset ETF",
         )
 
-        # Part 2: Grid search
+        # Part 2: Optuna search
         print(f"\n{'=' * 70}")
-        print("GRID SEARCH — Cross-Asset ETF (6,000 combinations)")
+        print(f"OPTUNA SEARCH — Cross-Asset ETF ({args.n_trials} trials)")
         print(f"{'=' * 70}\n")
 
         etf_result = run_max_profit_search(
@@ -203,6 +207,7 @@ def main():
                 "correlation_threshold": 0.65,
                 "correlation_lookback": 60,
             },
+            n_trials=args.n_trials,
             n_workers=args.n_workers,
             max_dd_limit=args.max_dd,
         )

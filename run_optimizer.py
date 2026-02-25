@@ -42,6 +42,10 @@ def parse_args() -> argparse.Namespace:
         "--n-workers", type=int, default=None,
         help="Number of parallel workers (default: cpu_count - 1)",
     )
+    parser.add_argument(
+        "--n-trials", type=int, default=200,
+        help="Number of Optuna trials for sensitivity analysis (default: 200)",
+    )
     return parser.parse_args()
 
 
@@ -84,7 +88,7 @@ def main():
 
     # Run sensitivity analysis
     base_params = StrategyParams()
-    print(f"\nStarting sensitivity analysis...")
+    print(f"\nStarting sensitivity analysis (Optuna TPE, {args.n_trials} trials)...")
     print(f"  Base params: kama={base_params.kama_period}, "
           f"lookback={base_params.lookback_period}, "
           f"buffer={base_params.kama_buffer}, top_n={base_params.top_n}")
@@ -96,6 +100,7 @@ def main():
         valid_tickers,
         INITIAL_CAPITAL,
         base_params=base_params,
+        n_trials=args.n_trials,
         n_workers=args.n_workers,
     )
 
@@ -108,10 +113,10 @@ def main():
     report_path.write_text(report)
     print(f"\nReport saved to {report_path}")
 
-    # Save full grid results
-    grid_path = output_dir / "grid_results.csv"
+    # Save full trial results
+    grid_path = output_dir / "trial_results.csv"
     result.grid_results.to_csv(grid_path, index=False)
-    print(f"Grid results saved to {grid_path}")
+    print(f"Trial results saved to {grid_path}")
 
     # Run base-params simulation for equity chart and asset report
     print("\nRunning base-params simulation for detailed report...")

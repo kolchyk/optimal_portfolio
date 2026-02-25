@@ -1,13 +1,14 @@
 """Tests for the parameter sensitivity analysis module."""
 
 import numpy as np
+import optuna
 import pandas as pd
 import pytest
 
 from src.portfolio_sim.optimizer import (
-    SENSITIVITY_GRID,
+    SENSITIVITY_SPACE,
     SensitivityResult,
-    build_param_grid,
+    _suggest_params,
     compute_marginal_profiles,
     compute_objective,
     compute_robustness_scores,
@@ -95,33 +96,38 @@ class TestComputeObjective:
 
 
 # ---------------------------------------------------------------------------
-# Parameter grid tests
+# Search space tests
 # ---------------------------------------------------------------------------
-class TestBuildParamGrid:
-    def test_default_grid_size(self):
-        params = build_param_grid()
-        assert len(params) == 5 * 5 * 5 * 5  # 625
+class TestSearchSpace:
+    def test_suggest_params_returns_strategy_params(self):
+        """Verify _suggest_params produces a valid StrategyParams."""
+        study = optuna.create_study()
+        trial = study.ask()
+        params = _suggest_params(trial, SENSITIVITY_SPACE)
+        assert isinstance(params, StrategyParams)
 
-    def test_custom_grid(self):
-        grid = {
-            "kama_period": [10, 20],
-            "lookback_period": [60],
-            "kama_buffer": [0.01],
-            "top_n": [20],
-        }
-        params = build_param_grid(grid)
-        assert len(params) == 2
-
-    def test_all_params_are_strategy_params(self):
-        params = build_param_grid()
-        for p in params:
-            assert isinstance(p, StrategyParams)
+    def test_kama_period_is_categorical(self):
+        """kama_period must come from the categorical set."""
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        study = optuna.create_study()
+        results = set()
+        for _ in range(50):
+            trial = study.ask()
+            params = _suggest_params(trial, SENSITIVITY_SPACE)
+            results.add(params.kama_period)
+            study.tell(trial, 1.0)
+        assert results.issubset({10, 15, 20, 30, 40})
 
     def test_params_hashable(self):
         """StrategyParams must be hashable for dict keys."""
-        params = build_param_grid()
-        s = set(params)
-        assert len(s) == len(params)
+        study = optuna.create_study()
+        params_list = []
+        for _ in range(10):
+            trial = study.ask()
+            params_list.append(_suggest_params(trial, SENSITIVITY_SPACE))
+            study.tell(trial, 1.0)
+        s = set(params_list)
+        assert len(s) <= len(params_list)
 
 
 # ---------------------------------------------------------------------------
@@ -318,41 +324,42 @@ class TestFormatSensitivityReport:
 
 
 # ---------------------------------------------------------------------------
-# End-to-end sensitivity test (small grid, synthetic data)
+# End-to-end sensitivity test (small search, synthetic data)
 # ---------------------------------------------------------------------------
 class TestRunSensitivity:
-    def test_small_grid_runs(self, long_synthetic_prices, long_synthetic_open):
-        """End-to-end: tiny 2x1x1x1 grid on synthetic data."""
+    def test_small_search_runs(self, long_synthetic_prices, long_synthetic_open):
+        """End-to-end: tiny Optuna search on synthetic data."""
         tickers = [c for c in long_synthetic_prices.columns if c != "SPY"]
-        grid = {
-            "kama_period": [10, 20],
-            "lookback_period": [60],
-            "kama_buffer": [0.01],
-            "top_n": [10],
+        space = {
+            "kama_period": {"type": "categorical", "choices": [10, 20]},
+            "lookback_period": {"type": "int", "low": 60, "high": 60, "step": 1},
+            "kama_buffer": {"type": "float", "low": 0.01, "high": 0.01, "step": 0.01},
+            "top_n": {"type": "int", "low": 10, "high": 10, "step": 1},
         }
         result = run_sensitivity(
             long_synthetic_prices,
             long_synthetic_open,
             tickers,
             initial_capital=10_000,
-            grid=grid,
+            space=space,
+            n_trials=4,
             n_workers=1,
         )
         assert isinstance(result, SensitivityResult)
-        assert len(result.grid_results) == 2
+        assert len(result.grid_results) >= 2
         assert "kama_period" in result.robustness_scores
         assert "lookback_period" in result.robustness_scores
 
     def test_base_objective_found(self, long_synthetic_prices, long_synthetic_open):
-        """Base params objective should be populated when base is in grid."""
+        """Base params objective should be populated via enqueue_trial."""
         tickers = [c for c in long_synthetic_prices.columns if c != "SPY"]
         base = StrategyParams(kama_period=20, lookback_period=60,
                               kama_buffer=0.01, top_n=10)
-        grid = {
-            "kama_period": [10, 20],
-            "lookback_period": [60],
-            "kama_buffer": [0.01],
-            "top_n": [10],
+        space = {
+            "kama_period": {"type": "categorical", "choices": [10, 20]},
+            "lookback_period": {"type": "int", "low": 60, "high": 60, "step": 1},
+            "kama_buffer": {"type": "float", "low": 0.01, "high": 0.01, "step": 0.01},
+            "top_n": {"type": "int", "low": 10, "high": 10, "step": 1},
         }
         result = run_sensitivity(
             long_synthetic_prices,
@@ -360,7 +367,8 @@ class TestRunSensitivity:
             tickers,
             initial_capital=10_000,
             base_params=base,
-            grid=grid,
+            space=space,
+            n_trials=4,
             n_workers=1,
         )
         assert not np.isnan(result.base_objective)
