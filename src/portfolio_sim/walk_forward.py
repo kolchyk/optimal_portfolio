@@ -76,7 +76,7 @@ def run_walk_forward(
     initial_capital: float = INITIAL_CAPITAL,
     base_params: StrategyParams | None = None,
     space: dict[str, dict] | None = None,
-    n_trials_per_step: int = 100,
+    n_trials_per_step: int = 50,
     n_workers: int | None = None,
     min_is_days: int = 756,
     oos_days: int = 252,

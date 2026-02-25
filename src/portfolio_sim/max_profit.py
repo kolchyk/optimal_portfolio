@@ -48,7 +48,7 @@ MAX_PROFIT_SPACE: dict[str, dict] = {
     "enable_regime_filter": {"type": "categorical", "choices": [True, False]},
 }
 
-DEFAULT_MAX_PROFIT_TRIALS: int = 500
+DEFAULT_MAX_PROFIT_TRIALS: int = 50
 
 ALL_PARAM_NAMES: list[str] = [
     "kama_period", "lookback_period", "top_n", "kama_buffer",

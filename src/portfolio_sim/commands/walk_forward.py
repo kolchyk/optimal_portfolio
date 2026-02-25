@@ -34,8 +34,8 @@ def register(subparsers) -> None:
         help="Number of parallel workers (default: cpu_count - 1)",
     )
     p.add_argument(
-        "--n-trials", type=int, default=100,
-        help="Number of Optuna trials per WFO step (default: 100)",
+        "--n-trials", type=int, default=50,
+        help="Number of Optuna trials per WFO step (default: 50)",
     )
     p.add_argument(
         "--oos-days", type=int, default=126,

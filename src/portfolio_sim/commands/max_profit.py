@@ -42,8 +42,8 @@ def register(subparsers) -> None:
         help="Max drawdown rejection limit (default: 0.60 = 60%%)",
     )
     p.add_argument(
-        "--n-trials", type=int, default=10,
-        help="Number of Optuna trials per universe (default: 500)",
+        "--n-trials", type=int, default=50,
+        help="Number of Optuna trials per universe (default: 50)",
     )
     p.add_argument(
         "--pareto", action="store_true",

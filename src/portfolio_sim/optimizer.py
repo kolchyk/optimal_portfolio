@@ -46,7 +46,7 @@ SENSITIVITY_SPACE: dict[str, dict] = {
     "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
 }
 
-DEFAULT_N_TRIALS: int = 200
+DEFAULT_N_TRIALS: int = 50
 
 PARAM_NAMES: list[str] = ["kama_period", "lookback_period", "kama_buffer", "top_n"]
 

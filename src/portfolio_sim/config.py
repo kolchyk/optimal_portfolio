@@ -16,9 +16,9 @@ RISK_FREE_RATE: float = 0.04
 # ---------------------------------------------------------------------------
 # Strategy parameters — concentrated momentum (4x S&P 500 target)
 # ---------------------------------------------------------------------------
-KAMA_PERIOD: int = 10  # Fast adaptive MA (~2 trading weeks)
-LOOKBACK_PERIOD: int = 150  # ~6-month momentum window
-TOP_N: int = 5  # 5 stocks, ~20% each — concentrated momentum
+KAMA_PERIOD: int = 20  # Fast adaptive MA (~4 trading weeks)
+LOOKBACK_PERIOD: int = 60  # ~3-month momentum window
+TOP_N: int = 20  # 20 positions, ~5% each
 KAMA_BUFFER: float = 0.008  # 0.8% hysteresis buffer
 
 # ---------------------------------------------------------------------------
@@ -136,7 +136,7 @@ ASSET_CLASS_MAP: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # Correlation filter (greedy diversification)
 # ---------------------------------------------------------------------------
-CORRELATION_THRESHOLD: float = 0.65
+CORRELATION_THRESHOLD: float = 0.9
 CORRELATION_LOOKBACK: int = 60  # trading days
 
 # ---------------------------------------------------------------------------

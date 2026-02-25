@@ -12,9 +12,9 @@ from src.portfolio_sim.config import (
 
 def test_constants_values():
     assert INITIAL_CAPITAL == 10_000
-    assert KAMA_PERIOD == 10
-    assert LOOKBACK_PERIOD == 150
-    assert TOP_N == 5
+    assert KAMA_PERIOD == 20
+    assert LOOKBACK_PERIOD == 60
+    assert TOP_N == 20
     assert KAMA_BUFFER == 0.008
     assert SPY_TICKER == "SPY"
 

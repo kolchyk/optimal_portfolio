@@ -37,8 +37,8 @@ def register(subparsers) -> None:
         help="Number of parallel workers (default: cpu_count - 1)",
     )
     p.add_argument(
-        "--n-trials", type=int, default=200,
-        help="Number of Optuna trials for sensitivity analysis (default: 200)",
+        "--n-trials", type=int, default=50,
+        help="Number of Optuna trials for sensitivity analysis (default: 50)",
     )
 
 

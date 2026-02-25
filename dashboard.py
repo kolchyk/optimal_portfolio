@@ -775,7 +775,7 @@ def _render_sidebar() -> dict:
         _param_card("Data Period", "Years of historical data to fetch")
         data_years = st.slider(
             "Data Period (years)",
-            min_value=3, max_value=10, value=5,
+            min_value=3, max_value=10, value=3,
             label_visibility="collapsed",
         )
 
