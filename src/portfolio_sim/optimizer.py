@@ -36,6 +36,21 @@ from src.portfolio_sim.reporting import compute_metrics
 log = structlog.get_logger()
 
 
+def _clamp_to_space(value, spec: dict):
+    """Clamp a parameter value to the nearest valid value in a search space spec."""
+    if spec["type"] == "categorical":
+        if value in spec["choices"]:
+            return value
+        return spec["choices"][0]
+    low, high = spec["low"], spec["high"]
+    step = spec.get("step")
+    clamped = max(low, min(high, value))
+    if step:
+        clamped = low + round((clamped - low) / step) * step
+        clamped = max(low, min(high, clamped))
+    return type(value)(clamped) if spec["type"] == "int" else clamped
+
+
 # ---------------------------------------------------------------------------
 # Default search space for sensitivity analysis
 # ---------------------------------------------------------------------------
@@ -121,7 +136,8 @@ def precompute_kama_caches(
     """
     all_tickers = [t for t in set(tickers + [SPY_TICKER]) if t in close_prices.columns]
     unique_periods = sorted(set(kama_periods))
-    n_workers = n_workers or max(1, os.cpu_count() - 1)
+    if not n_workers or n_workers < 1:
+        n_workers = max(1, os.cpu_count() - 1)
 
     # Build all (period, ticker) tasks
     tasks = [(p, t) for p in unique_periods for t in all_tickers]
@@ -248,7 +264,8 @@ def run_sensitivity(
     """
     base_params = base_params or StrategyParams()
     space = space or SENSITIVITY_SPACE
-    n_workers = n_workers or max(1, os.cpu_count() - 1)
+    if not n_workers or n_workers < 1:
+        n_workers = max(1, os.cpu_count() - 1)
 
     log.info(
         "sensitivity_start",
@@ -268,12 +285,12 @@ def run_sensitivity(
         sampler=optuna.samplers.TPESampler(seed=42),
     )
 
-    # Enqueue base params as first trial to guarantee base_objective
+    # Enqueue base params as first trial to guarantee base_objective.
+    # Clamp values to the search space so enqueue never fails when
+    # base_params fall outside a narrow custom space.
     study.enqueue_trial({
-        "kama_period": base_params.kama_period,
-        "lookback_period": base_params.lookback_period,
-        "kama_buffer": base_params.kama_buffer,
-        "top_n": base_params.top_n,
+        name: _clamp_to_space(getattr(base_params, name), spec)
+        for name, spec in space.items()
     })
 
     # Use ask/tell API with batch parallelism via ProcessPoolExecutor.

@@ -133,7 +133,8 @@ def run_max_profit_search(
     """
     default_params = default_params or StrategyParams()
     space = space or MAX_PROFIT_SPACE
-    n_workers = n_workers or max(1, os.cpu_count() - 1)
+    if not n_workers or n_workers < 1:
+        n_workers = max(1, os.cpu_count() - 1)
 
     log.info(
         "max_profit_start",
@@ -364,7 +365,8 @@ def run_max_profit_pareto(
     """
     default_params = default_params or StrategyParams()
     space = space or MAX_PROFIT_SPACE
-    n_workers = n_workers or max(1, os.cpu_count() - 1)
+    if not n_workers or n_workers < 1:
+        n_workers = max(1, os.cpu_count() - 1)
 
     log.info(
         "pareto_start",
