@@ -19,16 +19,14 @@ from src.portfolio_sim.config import (
     TOP_N,
     VOLATILITY_LOOKBACK,
 )
-from src.portfolio_sim.optimizer import PARAM_NAMES, SENSITIVITY_GRID
+from src.portfolio_sim.optimizer import DEFAULT_N_TRIALS, PARAM_NAMES, SENSITIVITY_SPACE
 
 _BUFFER_PCT = KAMA_BUFFER * 100
 _N_ETF = len(ETF_UNIVERSE)
 _ASSET_CLASS_COUNTS = Counter(ASSET_CLASS_MAP.values())
 _N_ASSET_CLASSES = len(_ASSET_CLASS_COUNTS)
 _CORR_PCT = CORRELATION_THRESHOLD * 100
-_N_SENSITIVITY = 1
-for v in SENSITIVITY_GRID.values():
-    _N_SENSITIVITY *= len(v)
+_N_SENSITIVITY = DEFAULT_N_TRIALS
 
 
 def page():
@@ -365,7 +363,7 @@ _Детальніше — у секції 4, крок 4._
     st.info(
         "Усі параметри можна змінювати на дашборді через бічну панель. "
         "Увімкніть **Auto-optimize** для автоматичного підбору оптимальних "
-        "параметрів (швидка сітка з 81 комбінації). Параметри за замовчуванням "
+        "параметрів (Optuna TPE семплер). Параметри за замовчуванням "
         "обрані з міркувань робастності (див. секцію 9)."
     )
 
@@ -399,20 +397,26 @@ _Детальніше — у секції 4, крок 4._
 а підтвердити, що обрані дефолти сидять на **плоському плато**
 продуктивності.
 
-**Як це працює?** Ми прогоняємо стратегію на сітці з
-**{_N_SENSITIVITY}** комбінацій параметрів:
+**Як це працює?** Ми прогоняємо стратегію на
+**{_N_SENSITIVITY}** випадкових комбінаціях параметрів (Optuna TPE семплер):
         """
     )
 
     grid_data = {
         "Параметр": [],
-        "Значення у сітці": [],
+        "Простір пошуку": [],
     }
     for name in PARAM_NAMES:
+        spec = SENSITIVITY_SPACE[name]
         grid_data["Параметр"].append(name)
-        grid_data["Значення у сітці"].append(
-            ", ".join(str(v) for v in SENSITIVITY_GRID[name])
-        )
+        if spec.get("type") == "categorical":
+            grid_data["Простір пошуку"].append(
+                ", ".join(str(v) for v in spec["choices"])
+            )
+        else:
+            grid_data["Простір пошуку"].append(
+                f"{spec['low']} – {spec['high']}, крок {spec['step']}"
+            )
     st.table(grid_data)
 
     st.markdown(
@@ -531,7 +535,7 @@ _Детальніше — у секції 4, крок 4._
   показує оптимальні портфелі для кожного рівня ризику. Побудована
   методом mean-variance optimization.
 - **Аналіз чутливості (Sensitivity Analysis)** — перевірка стратегії
-  на {_N_SENSITIVITY} комбінаціях параметрів. Мета: підтвердити
+  на {_N_SENSITIVITY} випробуваннях параметрів (Optuna TPE). Мета: підтвердити
   робастність, а не знайти "найкраще".
 - **Робастність** — здатність стратегії показувати стабільні
   результати при зміні параметрів. Протилежність overfitting.

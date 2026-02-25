@@ -29,8 +29,8 @@ def register(subparsers) -> None:
         help="Force refresh data cache from yfinance",
     )
     p.add_argument(
-        "--period", default="10y",
-        help="yfinance period string (default: 10y)",
+        "--period", default="3y",
+        help="yfinance period string (default: 3y)",
     )
     p.add_argument(
         "--n-workers", type=int, default=None,
@@ -50,7 +50,7 @@ def run(args) -> None:
     tickers = fetch_etf_tickers()
     print(f"Universe: {len(tickers)} tickers")
 
-    min_days = 756
+    min_days = 504
     print(f"Downloading price data ({args.period})...")
     close_prices, open_prices = fetch_price_data(
         tickers, period=args.period, refresh=args.refresh,

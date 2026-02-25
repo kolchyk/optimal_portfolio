@@ -26,8 +26,8 @@ def register(subparsers) -> None:
         help="Force refresh data cache from yfinance",
     )
     p.add_argument(
-        "--period", default="10y",
-        help="yfinance period string (default: 10y)",
+        "--period", default="3y",
+        help="yfinance period string (default: 3y)",
     )
     p.add_argument(
         "--n-workers", type=int, default=None,
@@ -38,12 +38,12 @@ def register(subparsers) -> None:
         help="Number of Optuna trials per WFO step (default: 100)",
     )
     p.add_argument(
-        "--oos-days", type=int, default=252,
-        help="OOS window size in trading days (default: 252 ~ 1 year)",
+        "--oos-days", type=int, default=126,
+        help="OOS window size in trading days (default: 126 ~ 6 months)",
     )
     p.add_argument(
-        "--min-is-days", type=int, default=756,
-        help="Minimum IS window size in trading days (default: 756 ~ 3 years)",
+        "--min-is-days", type=int, default=378,
+        help="Minimum IS window size in trading days (default: 378 ~ 1.5 years)",
     )
 
 

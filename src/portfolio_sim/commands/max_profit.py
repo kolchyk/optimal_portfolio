@@ -30,8 +30,8 @@ def register(subparsers) -> None:
         help="Force refresh data cache from yfinance",
     )
     p.add_argument(
-        "--period", default="2y",
-        help="yfinance period string (default: 2y)",
+        "--period", default="3y",
+        help="yfinance period string (default: 3y)",
     )
     p.add_argument(
         "--n-workers", type=int, default=None,
