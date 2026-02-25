@@ -95,8 +95,19 @@ def main():
         print("Future runs will load from cache (no download) unless you use --refresh.")
         return
 
+    # Build params for the selected universe
+    if is_etf:
+        params = StrategyParams(
+            use_risk_adjusted=True,
+            enable_regime_filter=False,
+            enable_correlation_filter=True,
+            sizing_mode="risk_parity",
+        )
+    else:
+        params = StrategyParams()
+
     # Filter tickers with sufficient history
-    min_days = 756  # ~3 years
+    min_days = params.warmup * 2
     if is_etf:
         # In ETF mode, SPY is tradable — do not exclude it
         valid_tickers = [
@@ -109,17 +120,6 @@ def main():
             if t != "SPY" and len(close_prices[t].dropna()) >= min_days
         ]
     print(f"Tradable tickers with {min_days}+ days: {len(valid_tickers)}")
-
-    # Build params for the selected universe
-    if is_etf:
-        params = StrategyParams(
-            use_risk_adjusted=True,
-            enable_regime_filter=False,
-            enable_correlation_filter=True,
-            sizing_mode="risk_parity",
-        )
-    else:
-        params = StrategyParams()
 
     # Run simulation
     print("\nRunning simulation...")
