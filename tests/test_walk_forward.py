@@ -53,12 +53,19 @@ class TestGenerateWFOSchedule:
         schedule = generate_wfo_schedule(dates, min_is_days=756, oos_days=252)
         assert len(schedule) >= 2
 
-    def test_schedule_is_anchored(self):
-        """All IS windows start at the first date."""
+    def test_schedule_is_sliding(self):
+        """IS window slides forward — start advances, size stays constant."""
         dates = pd.bdate_range("2018-01-02", periods=1600)
-        schedule = generate_wfo_schedule(dates, min_is_days=756, oos_days=252)
-        for is_start, _, _, _ in schedule:
-            assert is_start == dates[0]
+        min_is = 756
+        schedule = generate_wfo_schedule(dates, min_is_days=min_is, oos_days=252)
+        for i, (is_start, is_end, _, _) in enumerate(schedule):
+            # IS window size is always min_is_days
+            is_size = dates.get_loc(is_end) - dates.get_loc(is_start) + 1
+            assert is_size == min_is
+            # After first step, IS start should advance
+            if i > 0:
+                prev_start = schedule[i - 1][0]
+                assert is_start > prev_start
 
     def test_no_overlap_is_oos(self):
         """IS end must be strictly before OOS start."""
@@ -84,14 +91,14 @@ class TestGenerateWFOSchedule:
         schedule = generate_wfo_schedule(dates, min_is_days=756, oos_days=252)
         assert len(schedule) == 0
 
-    def test_is_window_grows(self):
-        """Each step's IS window should be larger than the previous."""
+    def test_is_window_constant_size(self):
+        """Each step's IS window should be the same size (sliding)."""
         dates = pd.bdate_range("2018-01-02", periods=2000)
-        schedule = generate_wfo_schedule(dates, min_is_days=400, oos_days=200)
-        for i in range(1, len(schedule)):
-            prev_is_end = schedule[i - 1][1]
-            curr_is_end = schedule[i][1]
-            assert curr_is_end > prev_is_end
+        min_is = 400
+        schedule = generate_wfo_schedule(dates, min_is_days=min_is, oos_days=200)
+        for is_start, is_end, _, _ in schedule:
+            is_size = dates.get_loc(is_end) - dates.get_loc(is_start) + 1
+            assert is_size == min_is
 
 
 # ---------------------------------------------------------------------------

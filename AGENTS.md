@@ -14,6 +14,7 @@
 - Three strategy bugs that must never be reintroduced: (1) Rank-21 Trap — sell only when KAMA stop-loss triggers, not when a stock drops out of top-N; (2) SPY Dribble — use directional thresholds with `KAMA_BUFFER` for bull/bear hysteresis; (3) All-in Sizing — use strict slot-based sizing, not total-cash divided by number of buys.
 - When shown a plan, trim unnecessary scope before implementing rather than building everything proposed.
 - Prefer concise plain language; avoid verbose documentation and duplicated sections.
+- Streamlit width: use `width="stretch"` instead of `use_container_width=True`; use `width="content"` instead of `use_container_width=False`.
 
 ## Learned Workspace Facts
 

@@ -1,13 +1,13 @@
 """Walk-Forward Optimization (WFO) for KAMA momentum strategy.
 
-Splits the timeline into expanding in-sample (IS) windows for parameter
+Splits the timeline into fixed-size in-sample (IS) windows for parameter
 optimization and fixed out-of-sample (OOS) windows for validation.
 This prevents overfitting by never testing parameters on data they were
 trained on.
 
-Anchored WFO: IS always starts at the first available date and grows
-by *oos_days* each step.  The final step's optimized parameters are
-the recommended "live" parameters.
+Sliding WFO: both IS start and IS end advance by *oos_days* each step,
+keeping the IS window at a constant *min_is_days* width.  The final
+step's optimized parameters are the recommended "live" parameters.
 """
 
 from __future__ import annotations
@@ -44,7 +44,7 @@ def generate_wfo_schedule(
 ) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
     """Generate (is_start, is_end, oos_start, oos_end) tuples.
 
-    Anchored WFO: IS always starts at ``dates[0]``, IS end advances by
+    Sliding WFO: IS window is always *min_is_days* wide and advances by
     *oos_days* each step.
 
     Returns empty list if there is not enough data for even one step.
@@ -54,7 +54,7 @@ def generate_wfo_schedule(
     is_end_idx = min_is_days - 1
 
     while is_end_idx + oos_days < total:
-        is_start = dates[0]
+        is_start = dates[is_end_idx - min_is_days + 1]
         is_end = dates[is_end_idx]
         oos_start = dates[is_end_idx + 1]
         oos_end_idx = min(is_end_idx + oos_days, total - 1)
@@ -82,7 +82,7 @@ def run_walk_forward(
     oos_days: int = 252,
     max_dd_limit: float = 0.30,
 ) -> WFOResult:
-    """Run anchored walk-forward optimization.
+    """Run sliding walk-forward optimization.
 
     For each step:
       1. Optimize parameters on the IS (in-sample) data slice.
@@ -276,7 +276,7 @@ def format_wfo_report(result: WFOResult) -> str:
     lines.append("=" * 90)
 
     lines.append("")
-    lines.append(f"Schedule: Anchored WFO, {len(result.steps)} steps")
+    lines.append(f"Schedule: Sliding WFO, {len(result.steps)} steps")
     if result.steps:
         s0 = result.steps[0]
         lines.append(f"  Full period: {s0.is_start.date()} .. {result.steps[-1].oos_end.date()}")

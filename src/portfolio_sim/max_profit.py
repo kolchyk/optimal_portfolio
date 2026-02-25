@@ -27,11 +27,7 @@ from src.portfolio_sim.optimizer import (
     _get_kama_periods_from_space,
     precompute_kama_caches,
 )
-from src.portfolio_sim.parallel import (
-    evaluate_combo,
-    init_eval_worker,
-    suggest_params,
-)
+from src.portfolio_sim.parallel import suggest_params
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics
 
@@ -164,6 +160,10 @@ def run_max_profit_search(
         direction="maximize",
         sampler=optuna.samplers.TPESampler(seed=42),
     )
+
+    # Import fresh references to avoid stale function objects after Streamlit
+    # module reloads (prevents PicklingError with ProcessPoolExecutor).
+    from src.portfolio_sim.parallel import evaluate_combo, init_eval_worker
 
     # Use ask/tell API with batch parallelism via ProcessPoolExecutor.
     executor = ProcessPoolExecutor(
@@ -395,6 +395,10 @@ def run_max_profit_pareto(
         directions=["maximize", "minimize"],  # CAGR ↑, MaxDD ↓
         sampler=optuna.samplers.NSGAIISampler(seed=42),
     )
+
+    # Import fresh references to avoid stale function objects after Streamlit
+    # module reloads (prevents PicklingError with ProcessPoolExecutor).
+    from src.portfolio_sim.parallel import evaluate_combo, init_eval_worker
 
     executor = ProcessPoolExecutor(
         max_workers=n_workers,

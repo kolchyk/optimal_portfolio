@@ -26,8 +26,6 @@ from src.portfolio_sim.config import INITIAL_CAPITAL, SPY_TICKER
 from src.portfolio_sim.indicators import compute_kama_series
 from src.portfolio_sim.parallel import (
     _shared,
-    evaluate_combo,
-    init_eval_worker,
     suggest_params,
 )
 from src.portfolio_sim.params import StrategyParams
@@ -292,6 +290,10 @@ def run_sensitivity(
         name: _clamp_to_space(getattr(base_params, name), spec)
         for name, spec in space.items()
     })
+
+    # Import fresh references to avoid stale function objects after Streamlit
+    # module reloads (prevents PicklingError with ProcessPoolExecutor).
+    from src.portfolio_sim.parallel import evaluate_combo, init_eval_worker
 
     # Use ask/tell API with batch parallelism via ProcessPoolExecutor.
     # This avoids the overhead of Optuna's internal threading (n_jobs)

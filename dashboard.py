@@ -35,13 +35,6 @@ from src.portfolio_sim.reporting import (
     compute_yearly_returns,
 )
 
-st.set_page_config(
-    page_title="KAMA Momentum Strategy",
-    page_icon="\U0001F4C8",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
 # ---------------------------------------------------------------------------
 # Theme / CSS
 # ---------------------------------------------------------------------------
@@ -98,43 +91,6 @@ def _inject_css():
             border-top: 1px solid #ddd;
             margin: 1.5rem 0 1rem 0;
         }
-
-        /* --- Sidebar --- */
-        [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
-        }
-        .sidebar-section {
-            font-size: 0.85rem;
-            font-weight: 600;
-            color: #333;
-            padding-bottom: 6px;
-            margin-bottom: 10px;
-            border-bottom: 2px solid;
-            border-image: linear-gradient(90deg, #2962FF 0%, transparent 100%) 1;
-        }
-        .param-card {
-            background: rgba(0, 0, 0, 0.03);
-            border: 1px solid rgba(0, 0, 0, 0.08);
-            border-radius: 10px;
-            padding: 10px 14px 6px 14px;
-            margin-bottom: 6px;
-        }
-        .param-card .param-label {
-            font-size: 0.72rem;
-            color: #666;
-            text-transform: uppercase;
-            letter-spacing: 0.8px;
-            margin-bottom: 2px;
-        }
-        .param-card .param-desc {
-            font-size: 0.68rem;
-            color: #999;
-            margin-top: 2px;
-        }
-        [data-testid="stSidebar"] .stSlider [data-baseweb="slider"] [role="slider"] {
-            background-color: #2962FF;
-            border-color: #2962FF;
-        }
         </style>
         """,
         unsafe_allow_html=True,
@@ -158,19 +114,15 @@ def _setup_logging():
         st.session_state.logging_configured = True
 
 
-_setup_logging()
-
 
 # ---------------------------------------------------------------------------
 # Cached data helpers
 # ---------------------------------------------------------------------------
-@st.cache_data(show_spinner="Fetching ETF tickers...")
-def cached_fetch_etf():
+def _fetch_etf_impl():
     return fetch_etf_tickers()
 
 
-@st.cache_data(show_spinner="Downloading price data...")
-def cached_fetch_prices(tickers_tuple: tuple, refresh: bool, cache_suffix: str = "", period: str = "5y"):
+def _fetch_prices_impl(tickers_tuple: tuple, refresh: bool, cache_suffix: str = "", period: str = "5y"):
     return fetch_price_data(list(tickers_tuple), period=period, refresh=refresh, cache_suffix=cache_suffix)
 
 
@@ -751,168 +703,172 @@ def _render_trade_log(result: SimulationResult):
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
-def _param_card(label: str, desc: str = "") -> None:
-    """Render a styled parameter card header."""
-    html = f'<div class="param-card"><div class="param-label">{label}</div>'
-    if desc:
-        html += f'<div class="param-desc">{desc}</div>'
-    html += "</div>"
-    st.markdown(html, unsafe_allow_html=True)
-
-
 def _render_sidebar() -> dict:
     with st.sidebar:
         st.title("KAMA Momentum")
 
+        # Перемещаем кнопку запуска наверх для удобства
+        run_clicked = st.button(
+            "🚀 Запустить бэктест", 
+            type="primary", 
+            width="stretch",
+        )
+
         is_etf_mode = True
         universe_mode = "ETF Cross-Asset"
 
-        # --- Settings ---
-        st.markdown("---")
-        st.markdown('<div class="sidebar-section">Settings</div>',
-                    unsafe_allow_html=True)
-
-        _param_card("Data Period", "Years of historical data to fetch")
-        data_years = st.slider(
-            "Data Period (years)",
-            min_value=3, max_value=10, value=3,
-            label_visibility="collapsed",
-        )
-
-        refresh = st.checkbox("Refresh data cache", value=False)
-
-        auto_optimize = st.toggle(
-            "Auto-optimize parameters",
-            value=False,
-            help="Run a quick 50-trial Optuna search to find optimal parameters "
-                 "before running the backtest.",
-        )
-
-        run_clicked = st.button(
-            "Run Backtest", type="primary", use_container_width=True,
-        )
-
-        # --- Strategy parameters ---
-        st.markdown("---")
-        st.markdown('<div class="sidebar-section">Strategy Parameters</div>',
-                    unsafe_allow_html=True)
-
-        _param_card("Initial Capital", "Starting portfolio value")
-        initial_capital = st.number_input(
-            "Initial Capital ($)", min_value=1_000.0, max_value=10_000_000.0,
-            value=float(INITIAL_CAPITAL), step=1_000.0,
-            label_visibility="collapsed",
-        )
-
-        opt = st.session_state.get("optimized_params")
-
-        _param_card("Top N Assets", "Number of positions to hold simultaneously")
-        _default_top_n = opt.top_n if opt else TOP_N
-        top_n = st.slider(
-            "Top N Assets",
-            min_value=3, max_value=20 if is_etf_mode else 50,
-            value=min(_default_top_n, 20) if is_etf_mode else _default_top_n,
-            label_visibility="collapsed",
-        )
-
-        _param_card("KAMA Period", "Adaptive MA lookback (trading days)")
-        _default_kama = opt.kama_period if opt else KAMA_PERIOD
-        kama_period = st.slider(
-            "KAMA Period", min_value=5, max_value=50, value=_default_kama,
-            label_visibility="collapsed",
-        )
-
-        _param_card("Lookback Period", "Momentum evaluation window (trading days)")
-        _default_lookback = opt.lookback_period if opt else LOOKBACK_PERIOD
-        lookback_period = st.slider(
-            "Lookback Period", min_value=20, max_value=252, value=_default_lookback,
-            label_visibility="collapsed",
-        )
-
-        _param_card("KAMA Buffer", "Hysteresis threshold for regime flips")
-        _default_buffer = opt.kama_buffer if opt else KAMA_BUFFER
-        kama_buffer = st.slider(
-            "KAMA Buffer", min_value=0.0, max_value=0.05,
-            value=float(_default_buffer), step=0.001, format="%.3f",
-            label_visibility="collapsed",
-        )
-
-        use_risk_adjusted = st.toggle(
-            "Risk-Adjusted Momentum",
-            value=True if is_etf_mode else False,
-            help="Rank by return/volatility instead of raw return. "
-                 "Prefers smooth uptrends but may miss volatile winners.",
-        )
-
-        # --- Diversification ---
-        st.markdown("---")
-        st.markdown('<div class="sidebar-section">Diversification</div>',
-                    unsafe_allow_html=True)
-        enable_correlation = st.toggle(
-            "Correlation Filter",
-            value=is_etf_mode,
-            help="Greedy diversification: skip assets too correlated with basket.",
-        )
-        corr_threshold = CORRELATION_THRESHOLD
-        corr_lookback = CORRELATION_LOOKBACK
-        if enable_correlation:
-            _param_card("Max Correlation", "Threshold for pairwise correlation")
-            corr_threshold = st.slider(
-                "Max Correlation", min_value=0.3, max_value=0.95,
-                value=CORRELATION_THRESHOLD, step=0.05,
-                label_visibility="collapsed",
-            )
-            _param_card("Correlation Window", "Lookback in trading days")
-            corr_lookback = st.slider(
-                "Correlation Window (days)", min_value=20, max_value=120,
-                value=CORRELATION_LOOKBACK,
-                label_visibility="collapsed",
+        # --- Группа 1: Данные и Оптимизация ---
+        with st.expander("📊 Данные и Оптимизация", expanded=True):
+            data_years = st.slider(
+                "Период данных (лет)",
+                min_value=3, max_value=10, value=3,
+                help="Количество лет исторических данных для загрузки"
             )
 
-        # --- Position sizing ---
-        st.markdown("---")
-        st.markdown('<div class="sidebar-section">Position Sizing</div>',
-                    unsafe_allow_html=True)
-        sizing_options = ["Equal Weight", "Risk Parity (Inverse Vol)"]
-        sizing_choice = st.radio(
-            "Sizing Method",
-            options=sizing_options,
-            index=1 if is_etf_mode else 0,
-            help="Risk Parity: allocate more to low-vol assets (bonds) and less to high-vol (equities).",
-            label_visibility="collapsed",
-        )
-        sizing_mode = "risk_parity" if sizing_choice == sizing_options[1] else "equal_weight"
-        vol_lookback = VOLATILITY_LOOKBACK
-        if sizing_mode == "risk_parity":
-            _param_card("Volatility Window", "Lookback for inverse-vol weighting")
-            vol_lookback = st.slider(
-                "Volatility Window (days)", min_value=10, max_value=60,
-                value=VOLATILITY_LOOKBACK,
-                label_visibility="collapsed",
+            refresh = st.checkbox("Обновить кэш данных", value=False)
+
+            optimize_mode = st.selectbox(
+                "Режим оптимизации",
+                ["None", "Sensitivity Analysis", "Max Profit (TPE)",
+                 "Max Profit (Pareto)", "Walk-Forward"],
+                help="Метод поиска параметров перед бэктестом"
             )
 
-        _param_card("Max Weight Per Position", "Cap on any single position (% of portfolio)")
-        max_weight = st.slider(
-            "Max Weight (%)",
-            min_value=5, max_value=50, value=15, step=1,
-            label_visibility="collapsed",
-        ) / 100.0
+            opt_n_trials = 50
+            opt_max_dd = 0.60
+            opt_oos_days = 126
+            opt_min_is_days = 378
 
-        # --- Regime filter ---
-        st.markdown("---")
-        enable_regime = st.toggle(
-            "SPY Regime Filter",
-            value=not is_etf_mode,
-            help="When enabled, liquidate all positions when SPY is below KAMA. "
-                 "Disable for cross-asset portfolios where bonds/gold hedge equity crashes.",
-        )
+            if optimize_mode != "None":
+                opt_n_trials = st.slider(
+                    "Количество итераций Optuna", min_value=20, max_value=200,
+                    value=50, step=10,
+                )
+
+            if optimize_mode == "Max Profit (TPE)":
+                opt_max_dd = st.slider(
+                    "Лимит просадки (%)", min_value=10, max_value=90,
+                    value=60, step=5,
+                    help="Отклонять комбинации с просадкой выше этого лимита.",
+                ) / 100.0
+
+            if optimize_mode == "Walk-Forward":
+                opt_oos_days = st.slider(
+                    "OOS окно (дни)", min_value=63, max_value=252,
+                    value=126, step=21,
+                    help="Окно проверки вне выборки на каждом шаге (~6 месяцев = 126).",
+                )
+                opt_min_is_days = st.slider(
+                    "Мин. IS окно (дни)", min_value=252, max_value=756,
+                    value=378, step=63,
+                    help="Минимальное окно обучения внутри выборки (~1.5 года = 378).",
+                )
+
+        # --- Группа 2: Параметры стратегии ---
+        with st.expander("⚙️ Параметры стратегии", expanded=True):
+            initial_capital = st.number_input(
+                "Начальный капитал ($)", 
+                min_value=1_000.0, max_value=10_000_000.0,
+                value=float(INITIAL_CAPITAL), step=1_000.0,
+                help="Стартовая стоимость портфеля"
+            )
+
+            opt = st.session_state.get("optimized_params")
+
+            _default_top_n = opt.top_n if opt else TOP_N
+            top_n = st.slider(
+                "Кол-во активов (Top N)",
+                min_value=3, max_value=20 if is_etf_mode else 50,
+                value=min(_default_top_n, 20) if is_etf_mode else _default_top_n,
+                help="Количество позиций, удерживаемых одновременно"
+            )
+
+            _default_kama = opt.kama_period if opt else KAMA_PERIOD
+            kama_period = st.slider(
+                "Период KAMA", min_value=5, max_value=50, value=_default_kama,
+                help="Окно адаптивной скользящей средней (торговые дни)"
+            )
+
+            _default_lookback = opt.lookback_period if opt else LOOKBACK_PERIOD
+            lookback_period = st.slider(
+                "Окно моментума", min_value=20, max_value=252, value=_default_lookback,
+                help="Окно оценки моментума (торговые дни)"
+            )
+
+            _default_buffer = opt.kama_buffer if opt else KAMA_BUFFER
+            kama_buffer = st.slider(
+                "Буфер KAMA", min_value=0.0, max_value=0.05,
+                value=float(_default_buffer), step=0.001, format="%.3f",
+                help="Порог гистерезиса для переключения режимов"
+            )
+
+            use_risk_adjusted = st.toggle(
+                "Риск-адаптированный моментум",
+                value=True if is_etf_mode else False,
+                help="Ранжирование по доходности/волатильности вместо сырой доходности. "
+                     "Предпочитает плавные восходящие тренды.",
+            )
+
+        # --- Группа 3: Расширенные настройки ---
+        with st.expander("⚙️ Расширенные настройки", expanded=False):
+            enable_correlation = st.toggle(
+                "Фильтр корреляции",
+                value=is_etf_mode,
+                help="Жадная диверсификация: пропускать активы, слишком коррелированные с корзиной.",
+            )
+            corr_threshold = CORRELATION_THRESHOLD
+            corr_lookback = CORRELATION_LOOKBACK
+            if enable_correlation:
+                corr_threshold = st.slider(
+                    "Макс. корреляция", min_value=0.3, max_value=0.95,
+                    value=CORRELATION_THRESHOLD, step=0.05,
+                    help="Порог для парной корреляции"
+                )
+                corr_lookback = st.slider(
+                    "Окно корреляции (дни)", min_value=20, max_value=120,
+                    value=CORRELATION_LOOKBACK,
+                    help="Окно расчета корреляции в торговых днях"
+                )
+
+            sizing_options = ["Equal Weight", "Risk Parity (Inverse Vol)"]
+            sizing_choice = st.radio(
+                "Метод определения весов",
+                options=sizing_options,
+                index=1 if is_etf_mode else 0,
+                help="Risk Parity: больше веса низковолатильным активам (облигации) и меньше высоковолатильным (акции).",
+            )
+            sizing_mode = "risk_parity" if sizing_choice == sizing_options[1] else "equal_weight"
+            vol_lookback = VOLATILITY_LOOKBACK
+            if sizing_mode == "risk_parity":
+                vol_lookback = st.slider(
+                    "Окно волатильности (дни)", min_value=10, max_value=60,
+                    value=VOLATILITY_LOOKBACK,
+                    help="Окно для расчета весов на основе обратной волатильности"
+                )
+
+            max_weight = st.slider(
+                "Макс. вес позиции (%)",
+                min_value=5, max_value=50, value=15, step=1,
+                help="Ограничение веса любого отдельного актива в портфеле"
+            ) / 100.0
+
+            enable_regime = st.toggle(
+                "Фильтр режима SPY",
+                value=not is_etf_mode,
+                help="При включении: ликвидировать все позиции, если SPY ниже своей KAMA. "
+                     "Отключите для кросс-активных портфелей.",
+            )
 
     return {
         "universe_mode": universe_mode,
         "is_etf_mode": is_etf_mode,
         "data_years": data_years,
         "refresh": refresh,
-        "auto_optimize": auto_optimize,
+        "optimize_mode": optimize_mode,
+        "opt_n_trials": opt_n_trials,
+        "opt_max_dd": opt_max_dd,
+        "opt_oos_days": opt_oos_days,
+        "opt_min_is_days": opt_min_is_days,
         "initial_capital": float(initial_capital),
         "top_n": top_n,
         "kama_period": kama_period,
@@ -931,9 +887,179 @@ def _render_sidebar() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Optimization results display
+# ---------------------------------------------------------------------------
+def _render_optimization_results() -> None:
+    """Show optimization details if available in session state."""
+    detail = st.session_state.get("opt_detail")
+    if detail is None:
+        return
+
+    kind, data = detail
+
+    if kind == "sensitivity":
+        with st.expander("Sensitivity Analysis Results", expanded=False):
+            # Robustness scores
+            st.subheader("Robustness Scores")
+            scores = data.robustness_scores
+            cols = st.columns(len(scores))
+            for col, (name, score) in zip(cols, scores.items()):
+                verdict = "Robust" if score >= 0.8 else "Moderate" if score >= 0.5 else "Sensitive"
+                col.metric(name, f"{score:.2f}", verdict)
+
+            # Top combos
+            valid = data.grid_results[data.grid_results["objective"] > -999.0]
+            if not valid.empty:
+                st.subheader("Top 10 Combinations")
+                top = valid.nlargest(10, "objective")[
+                    ["kama_period", "lookback_period", "kama_buffer", "top_n",
+                     "objective", "cagr", "max_drawdown", "sharpe"]
+                ].reset_index(drop=True)
+                top.index += 1
+                fmt = {
+                    "cagr": "{:.2%}",
+                    "max_drawdown": "{:.2%}",
+                    "objective": "{:.4f}",
+                    "sharpe": "{:.2f}",
+                    "kama_buffer": "{:.3f}",
+                }
+                st.dataframe(top.style.format(fmt), width="stretch")
+
+    elif kind == "max_profit_tpe":
+        with st.expander("Max Profit (TPE) Results", expanded=False):
+            grid = data.grid_results
+            valid = grid[grid["objective_cagr"] > -999.0]
+            st.caption(
+                f"{len(grid)} trials, {len(valid)} valid "
+                f"({len(valid) / max(len(grid), 1):.0%})"
+            )
+            if not valid.empty:
+                st.subheader("Top 10 by CAGR")
+                display_cols = ["kama_period", "lookback_period", "kama_buffer",
+                                "top_n", "cagr", "max_drawdown", "sharpe"]
+                existing = [c for c in display_cols if c in valid.columns]
+                top = valid.nlargest(10, "cagr")[existing].reset_index(drop=True)
+                top.index += 1
+                fmt = {"cagr": "{:.2%}", "max_drawdown": "{:.2%}",
+                       "sharpe": "{:.2f}", "kama_buffer": "{:.3f}"}
+                st.dataframe(top.style.format(
+                    {k: v for k, v in fmt.items() if k in existing}
+                ), width="stretch")
+
+    elif kind == "max_profit_pareto":
+        with st.expander("Pareto Front (NSGA-II) Results", expanded=False):
+            pf = data.pareto_front
+            if pf is not None and not pf.empty:
+                st.caption(f"{len(pf)} non-dominated solutions")
+
+                # Scatter: CAGR vs MaxDD
+                pf_valid = pf[(pf["cagr"] > 0) & (pf["max_drawdown"] > 0)].copy()
+                if not pf_valid.empty:
+                    import plotly.express as px
+                    fig = px.scatter(
+                        pf_valid, x="max_drawdown", y="cagr",
+                        hover_data=["kama_period", "lookback_period",
+                                     "kama_buffer", "top_n"],
+                        labels={"max_drawdown": "Max Drawdown",
+                                "cagr": "CAGR"},
+                        title="Pareto Front: CAGR vs Max Drawdown",
+                    )
+                    fig.update_traces(marker=dict(size=8))
+                    fig.update_layout(
+                        xaxis_tickformat=".0%",
+                        yaxis_tickformat=".0%",
+                        height=400,
+                    )
+                    st.plotly_chart(fig, width="stretch")
+
+                    # Top by Calmar
+                    pf_valid["calmar"] = pf_valid["cagr"] / pf_valid["max_drawdown"]
+                    top = pf_valid.nlargest(10, "calmar")[
+                        ["kama_period", "lookback_period", "kama_buffer",
+                         "top_n", "cagr", "max_drawdown", "calmar"]
+                    ].reset_index(drop=True)
+                    top.index += 1
+                    fmt = {"cagr": "{:.2%}", "max_drawdown": "{:.2%}",
+                           "calmar": "{:.2f}", "kama_buffer": "{:.3f}"}
+                    st.dataframe(top.style.format(fmt), width="stretch")
+            else:
+                st.warning("No valid Pareto front solutions found.")
+
+    elif kind == "wfo":
+        with st.expander("Walk-Forward Optimization Results", expanded=False):
+            wfo = data
+            # Per-step table
+            step_rows = []
+            for step in wfo.steps:
+                step_rows.append({
+                    "Step": step.step_index + 1,
+                    "IS Period": f"{step.is_start.date()} .. {step.is_end.date()}",
+                    "OOS Period": f"{step.oos_start.date()} .. {step.oos_end.date()}",
+                    "IS CAGR": step.is_metrics.get("cagr", 0),
+                    "OOS CAGR": step.oos_metrics.get("cagr", 0),
+                    "OOS MaxDD": step.oos_metrics.get("max_drawdown", 0),
+                    "OOS Sharpe": step.oos_metrics.get("sharpe", 0),
+                })
+            steps_df = pd.DataFrame(step_rows)
+            fmt = {"IS CAGR": "{:.2%}", "OOS CAGR": "{:.2%}",
+                   "OOS MaxDD": "{:.2%}", "OOS Sharpe": "{:.2f}"}
+            st.dataframe(steps_df.style.format(fmt), width="stretch")
+
+            # Degradation
+            import numpy as np
+            is_cagrs = [s.is_metrics.get("cagr", 0) for s in wfo.steps]
+            oos_cagrs = [s.oos_metrics.get("cagr", 0) for s in wfo.steps]
+            avg_is = np.mean(is_cagrs)
+            avg_oos = np.mean(oos_cagrs)
+            if avg_is > 0:
+                degradation = 1.0 - avg_oos / avg_is
+                verdict = "Acceptable" if degradation <= 0.5 else "High — possible overfitting"
+                st.metric("IS/OOS Degradation", f"{degradation:.1%}", verdict)
+            else:
+                st.metric("IS/OOS Degradation", "N/A")
+
+            # Stitched OOS equity chart
+            st.subheader("Stitched Out-of-Sample Equity")
+            import plotly.graph_objects as go
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=wfo.stitched_equity.index,
+                y=wfo.stitched_equity.values,
+                name="Strategy (OOS)",
+                line=dict(width=2),
+            ))
+            if wfo.stitched_spy_equity is not None and not wfo.stitched_spy_equity.empty:
+                fig.add_trace(go.Scatter(
+                    x=wfo.stitched_spy_equity.index,
+                    y=wfo.stitched_spy_equity.values,
+                    name="SPY (OOS)",
+                    line=dict(width=1, dash="dash"),
+                ))
+            fig.update_layout(
+                yaxis_title="Portfolio Value ($)",
+                height=400,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            )
+            st.plotly_chart(fig, width="stretch")
+
+            # Recommended params
+            fp = wfo.final_params
+            st.info(
+                f"Recommended live params: "
+                f"KAMA={fp.kama_period}, Lookback={fp.lookback_period}, "
+                f"Buffer={fp.kama_buffer}, Top N={fp.top_n}"
+            )
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
+    _setup_logging()
+
+    cached_fetch_etf = st.cache_data(show_spinner="Fetching ETF tickers...")(_fetch_etf_impl)
+    cached_fetch_prices = st.cache_data(show_spinner="Downloading price data...")(_fetch_prices_impl)
+
     _inject_css()
     sidebar = _render_sidebar()
 
@@ -970,38 +1096,132 @@ def main():
             max_weight=sidebar["max_weight"],
         )
 
-        # Auto-optimize: run quick Optuna search before simulation
+        # --- Optimization dispatch ---
         best = None
-        if sidebar["auto_optimize"]:
-            with st.spinner("Auto-optimizing parameters (50 Optuna trials)..."):
+        opt_mode = sidebar["optimize_mode"]
+        n_trials = sidebar["opt_n_trials"]
+
+        if opt_mode == "Sensitivity Analysis":
+            with st.spinner(f"Sensitivity analysis ({n_trials} trials)..."):
                 from src.portfolio_sim.optimizer import (
                     find_best_params, run_sensitivity,
                 )
-                opt_result = run_sensitivity(
+                sens_result = run_sensitivity(
                     close_prices, open_prices, valid,
                     sidebar["initial_capital"],
-                    n_trials=50,
+                    n_trials=n_trials,
                     n_workers=-1,
                 )
-                best = find_best_params(opt_result)
-            if best is not None:
-                st.session_state["optimized_params"] = best
-                st.toast(
-                    f"Optimal: KAMA={best.kama_period}, "
-                    f"Lookback={best.lookback_period}, "
-                    f"Buffer={best.kama_buffer}, "
-                    f"Top N={best.top_n}",
-                    icon="✅",
-                )
+                best = find_best_params(sens_result)
+                st.session_state["opt_detail"] = ("sensitivity", sens_result)
+
+        elif opt_mode in ("Max Profit (TPE)", "Max Profit (Pareto)"):
+            fixed = {
+                "enable_correlation_filter": True,
+                "correlation_threshold": 0.65,
+                "correlation_lookback": 60,
+                "use_risk_adjusted": True,
+                "sizing_mode": "risk_parity",
+            }
+            from src.portfolio_sim.max_profit import (
+                run_max_profit_pareto,
+                run_max_profit_search,
+                select_best_from_pareto,
+            )
+            from src.portfolio_sim.params import StrategyParams as _SP
+
+            base = _SP(
+                use_risk_adjusted=True,
+                enable_regime_filter=False,
+                enable_correlation_filter=True,
+                sizing_mode="risk_parity",
+            )
+
+            if opt_mode == "Max Profit (TPE)":
+                with st.spinner(f"Max-profit TPE search ({n_trials} trials)..."):
+                    mp_result = run_max_profit_search(
+                        close_prices, open_prices, valid,
+                        sidebar["initial_capital"],
+                        universe="etf",
+                        default_params=base,
+                        fixed_params=fixed,
+                        n_trials=n_trials,
+                        max_dd_limit=sidebar["opt_max_dd"],
+                    )
+                    grid = mp_result.grid_results
+                    top = grid[grid["objective_cagr"] > -999.0]
+                    if not top.empty:
+                        b = top.nlargest(1, "cagr").iloc[0]
+                        best = StrategyParams(
+                            kama_period=int(b["kama_period"]),
+                            lookback_period=int(b["lookback_period"]),
+                            top_n=int(b["top_n"]),
+                            kama_buffer=float(b["kama_buffer"]),
+                        )
+                    st.session_state["opt_detail"] = ("max_profit_tpe", mp_result)
             else:
-                st.warning("Auto-optimization found no valid combinations. Using manual parameters.")
+                with st.spinner(f"Pareto search NSGA-II ({n_trials} trials)..."):
+                    mp_result = run_max_profit_pareto(
+                        close_prices, open_prices, valid,
+                        sidebar["initial_capital"],
+                        universe="etf",
+                        default_params=base,
+                        fixed_params=fixed,
+                        n_trials=n_trials,
+                    )
+                    best = select_best_from_pareto(mp_result)
+                    st.session_state["opt_detail"] = ("max_profit_pareto", mp_result)
+
+            # Override diversification/sizing with max-profit fixed params
+            if best is not None:
+                common_kwargs.update(
+                    use_risk_adjusted=True,
+                    enable_regime_filter=best.enable_regime_filter,
+                    enable_correlation_filter=True,
+                    correlation_threshold=0.65,
+                    correlation_lookback=60,
+                    sizing_mode="risk_parity",
+                )
+
+        elif opt_mode == "Walk-Forward":
+            from src.portfolio_sim.walk_forward import run_walk_forward
+
+            with st.spinner(
+                f"Walk-forward optimization ({n_trials} trials/step, "
+                f"OOS={sidebar['opt_oos_days']}d)..."
+            ):
+                wfo_result = run_walk_forward(
+                    close_prices, open_prices, valid,
+                    sidebar["initial_capital"],
+                    n_trials_per_step=n_trials,
+                    min_is_days=sidebar["opt_min_is_days"],
+                    oos_days=sidebar["opt_oos_days"],
+                )
+                best = wfo_result.final_params
+                st.session_state["opt_detail"] = ("wfo", wfo_result)
 
         if best is not None:
+            st.session_state["optimized_params"] = best
+            st.toast(
+                f"Optimal: KAMA={best.kama_period}, "
+                f"Lookback={best.lookback_period}, "
+                f"Buffer={best.kama_buffer}, "
+                f"Top N={best.top_n}",
+                icon="✅",
+            )
             common_kwargs.update(
                 kama_period=best.kama_period,
                 lookback_period=best.lookback_period,
                 top_n=best.top_n,
                 kama_buffer=best.kama_buffer,
+            )
+        elif opt_mode != "None":
+            st.warning("Optimization found no valid combinations. Using manual parameters.")
+            common_kwargs.update(
+                kama_period=sidebar["kama_period"],
+                lookback_period=sidebar["lookback_period"],
+                top_n=sidebar["top_n"],
+                kama_buffer=sidebar["kama_buffer"],
             )
         else:
             common_kwargs.update(
@@ -1031,6 +1251,9 @@ def main():
 
     strat_m = compute_metrics(result.equity)
     spy_m = compute_metrics(result.spy_equity)
+
+    # --- Optimization results expander ---
+    _render_optimization_results()
 
     # --- Date range info ---
     st.markdown(
@@ -1085,7 +1308,7 @@ def main():
     with st.spinner("Computing efficient frontier..."):
         st.plotly_chart(
             plot_risk_return_scatter(close_prices, result=result),
-            use_container_width=True,
+            width="stretch",
         )
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -1110,4 +1333,10 @@ def main():
 
 
 if __name__ == "__main__":
+    st.set_page_config(
+        page_title="KAMA Momentum Strategy",
+        page_icon="\U0001F4C8",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
     main()
