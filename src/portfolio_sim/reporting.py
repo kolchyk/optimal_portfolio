@@ -136,6 +136,7 @@ def save_equity_png(
     spy_equity: pd.Series,
     output_dir: Path,
     title: str = "KAMA Momentum Strategy vs S&P 500",
+    filename: str = "equity_curve.png",
 ) -> Path:
     """Save strategy-vs-SPY equity comparison chart as PNG."""
     fig, (ax1, ax2) = plt.subplots(
@@ -176,7 +177,7 @@ def save_equity_png(
     fig.tight_layout(rect=[0, 0.05, 1, 0.97])
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / "equity_curve.png"
+    path = output_dir / filename
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     print(f"Equity curve saved to {path}")

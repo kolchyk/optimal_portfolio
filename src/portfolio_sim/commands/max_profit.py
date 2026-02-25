@@ -14,9 +14,14 @@ from src.portfolio_sim.max_profit import (
     run_max_profit_pareto,
     run_max_profit_search,
     select_best_from_pareto,
+    select_best_from_search,
 )
 from src.portfolio_sim.params import StrategyParams
-from src.portfolio_sim.reporting import compute_metrics, format_comparison_table
+from src.portfolio_sim.reporting import (
+    compute_metrics,
+    format_comparison_table,
+    save_equity_png,
+)
 
 COMMAND_NAME = "max-profit"
 
@@ -51,7 +56,10 @@ def register(subparsers) -> None:
     )
 
 
-def _run_verification(close_prices, open_prices, tickers, initial_capital, params, universe_name):
+def _run_verification(
+    close_prices, open_prices, tickers, initial_capital, params, universe_name,
+    output_dir=None,
+):
     """Run simulation with given params and print metrics."""
     print(f"\n{'=' * 70}")
     print(f"VERIFICATION — {universe_name} (default params)")
@@ -66,6 +74,14 @@ def _run_verification(close_prices, open_prices, tickers, initial_capital, param
     spy_metrics = compute_metrics(result.spy_equity)
 
     print(f"\n{format_comparison_table(strat_metrics, spy_metrics)}")
+
+    if output_dir:
+        save_equity_png(
+            result.equity, result.spy_equity, output_dir,
+            title=f"Baseline: {universe_name} (Default Params)",
+            filename="baseline_equity_curve.png",
+        )
+
     return strat_metrics
 
 
@@ -103,6 +119,7 @@ def run(args) -> None:
     _run_verification(
         close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
         etf_params, "Cross-Asset ETF",
+        output_dir=output_dir,
     )
 
     fixed = {
@@ -112,6 +129,8 @@ def run(args) -> None:
         "use_risk_adjusted": True,
         "sizing_mode": "risk_parity",
     }
+
+    best_params = None
 
     if args.pareto:
         print(f"\n{'=' * 70}")
@@ -128,11 +147,11 @@ def run(args) -> None:
         )
 
         report_etf = format_pareto_report(etf_result)
-        best_pareto = select_best_from_pareto(etf_result)
-        if best_pareto:
+        best_params = select_best_from_pareto(etf_result)
+        if best_params:
             print(f"\nBest from Pareto front (by Calmar):")
-            print(f"  kama={best_pareto.kama_period}, lookback={best_pareto.lookback_period}, "
-                  f"buffer={best_pareto.kama_buffer}, top_n={best_pareto.top_n}")
+            print(f"  kama={best_params.kama_period}, lookback={best_params.lookback_period}, "
+                  f"buffer={best_params.kama_buffer}, top_n={best_params.top_n}")
 
         if etf_result.pareto_front is not None:
             pareto_path = output_dir / "pareto_front_etf.csv"
@@ -154,6 +173,7 @@ def run(args) -> None:
         )
 
         report_etf = format_max_profit_report(etf_result)
+        best_params = select_best_from_search(etf_result)
 
     print(f"\n{report_etf}")
 
@@ -161,6 +181,20 @@ def run(args) -> None:
         output_dir / "grid_results_etf.csv", index=False,
     )
     (output_dir / "report_etf.txt").write_text(report_etf)
+
+    # Save best parameters' equity curve
+    if best_params:
+        print("\nRunning simulation with best parameters for equity curve...")
+        best_result = run_simulation(
+            close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
+            params=best_params, show_progress=True,
+        )
+        save_equity_png(
+            best_result.equity, best_result.spy_equity, output_dir,
+            title=f"Best Parameters: kama={best_params.kama_period}, lbk={best_params.lookback_period}, buf={best_params.kama_buffer:.3f}, top_n={best_params.top_n}",
+            filename="best_equity_curve.png",
+        )
+
     summary_lines.append("")
     summary_lines.append(report_etf)
 

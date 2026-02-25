@@ -487,6 +487,25 @@ def run_max_profit_pareto(
     )
 
 
+def select_best_from_search(result: MaxProfitResult) -> StrategyParams | None:
+    """Select the trial with the best CAGR from a single-objective search."""
+    grid = result.grid_results
+    if grid.empty:
+        return None
+
+    valid = grid[grid["objective_cagr"] > -999.0]
+    if valid.empty:
+        return None
+
+    best = valid.loc[valid["objective_cagr"].idxmax()]
+
+    kwargs = {}
+    for key in _MP_PARAM_KEYS:
+        if key in best.index:
+            kwargs[key] = best[key]
+    return StrategyParams(**kwargs)
+
+
 def select_best_from_pareto(result: MaxProfitResult) -> StrategyParams | None:
     """Select the trial with the best Calmar ratio from the Pareto front."""
     pf = result.pareto_front
