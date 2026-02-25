@@ -60,12 +60,21 @@ def _inject_css():
     st.markdown(
         """
         <style>
+        /* --- Equal-height metric cards in a row --- */
+        div[data-testid="stHorizontalBlock"] {
+            align-items: stretch;
+        }
+        div[data-testid="stColumn"] > div:first-child {
+            height: 100%;
+        }
         /* --- Metric cards --- */
         .metric-card {
             background: #f5f5f5;
             border-radius: 8px;
             padding: 14px 18px;
             margin: 4px 0;
+            height: 100%;
+            box-sizing: border-box;
         }
         .metric-card .label {
             color: #666;
@@ -165,8 +174,8 @@ def cached_fetch_etf():
 
 
 @st.cache_data(show_spinner="Downloading price data...")
-def cached_fetch_prices(tickers_tuple: tuple, refresh: bool, cache_suffix: str = ""):
-    return fetch_price_data(list(tickers_tuple), refresh=refresh, cache_suffix=cache_suffix)
+def cached_fetch_prices(tickers_tuple: tuple, refresh: bool, cache_suffix: str = "", period: str = "5y"):
+    return fetch_price_data(list(tickers_tuple), period=period, refresh=refresh, cache_suffix=cache_suffix)
 
 
 
@@ -503,8 +512,14 @@ def compute_efficient_frontier(
 ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
     """Compute the efficient frontier for the given asset universe.
 
-    Returns (frontier_vols, frontier_rets, asset_stats) where asset_stats is
-    a DataFrame with columns ['ticker', 'ann_return', 'ann_vol'].
+    The optimization uses arithmetic mean returns (correct for mean-variance
+    optimization), but the returned values are converted to geometric returns
+    (CAGR) for consistent display alongside realized portfolio metrics.
+
+    Returns (frontier_vols, frontier_rets, asset_stats) where:
+      - frontier_rets are CAGR-approximated returns (geometric ≈ arithmetic − σ²/2)
+      - asset_stats is a DataFrame with columns ['ticker', 'ann_return', 'ann_vol']
+        where 'ann_return' is the actual CAGR computed from price data.
     """
     daily_returns = close_prices.pct_change().dropna(how="all")
     valid_cols = [
@@ -525,9 +540,25 @@ def compute_efficient_frontier(
     ann_cov += np.eye(n_assets) * 1e-8
 
     ann_vols = np.sqrt(np.diag(ann_cov))
+
+    # Compute CAGR for each individual asset from actual price data
+    # (more accurate than the arithmetic-to-geometric approximation).
+    asset_cagrs = []
+    for col in valid_cols:
+        col_prices = close_prices[col].dropna()
+        if len(col_prices) >= 2:
+            asset_cagr = (
+                (col_prices.iloc[-1] / col_prices.iloc[0])
+                ** (252 / len(col_prices))
+                - 1
+            )
+        else:
+            asset_cagr = 0.0
+        asset_cagrs.append(asset_cagr)
+
     asset_stats = pd.DataFrame({
         "ticker": valid_cols,
-        "ann_return": ann_returns,
+        "ann_return": asset_cagrs,
         "ann_vol": ann_vols,
     })
 
@@ -563,7 +594,14 @@ def compute_efficient_frontier(
             frontier_vols.append(port_vol(res.x))
             frontier_rets.append(port_ret(res.x))
 
-    return np.array(frontier_vols), np.array(frontier_rets), asset_stats
+    frontier_vols_arr = np.array(frontier_vols)
+    frontier_rets_arr = np.array(frontier_rets)
+
+    # Convert frontier returns from arithmetic to geometric (CAGR).
+    # Standard approximation: geometric ≈ arithmetic − σ²/2
+    frontier_rets_geo = frontier_rets_arr - 0.5 * frontier_vols_arr ** 2
+
+    return frontier_vols_arr, frontier_rets_geo, asset_stats
 
 
 def plot_risk_return_scatter(
@@ -593,7 +631,7 @@ def plot_risk_return_scatter(
                     color=asset_stats["ann_return"].values * 100,
                     colorscale="RdYlGn",
                     showscale=True,
-                    colorbar=dict(title="Return %", ticksuffix="%"),
+                    colorbar=dict(title="CAGR %", ticksuffix="%"),
                     opacity=0.7,
                     line=dict(width=0.5, color="#333"),
                 ),
@@ -601,7 +639,7 @@ def plot_risk_return_scatter(
                 hovertemplate=(
                     "<b>%{text}</b><br>"
                     "Volatility: %{x:.1f}%<br>"
-                    "Return: %{y:.1f}%<br>"
+                    "CAGR: %{y:.1f}%<br>"
                     "<extra></extra>"
                 ),
             )
@@ -618,7 +656,7 @@ def plot_risk_return_scatter(
                 line=dict(color=COLOR_FRONTIER, width=3),
                 hovertemplate=(
                     "Volatility: %{x:.1f}%<br>"
-                    "Return: %{y:.1f}%<br>"
+                    "CAGR: %{y:.1f}%<br>"
                     "<extra>Efficient Frontier</extra>"
                 ),
             )
@@ -675,7 +713,7 @@ def plot_risk_return_scatter(
         **_base_layout(
             title="Risk-Return Distribution & Efficient Frontier",
             xaxis_title="Annualized Volatility (%)",
-            yaxis_title="Annualized Return (%)",
+            yaxis_title="CAGR (%)",
             height=550,
         )
     )
@@ -737,7 +775,21 @@ def _render_sidebar() -> dict:
         is_etf_mode = True
         universe_mode = "ETF Cross-Asset"
 
+        _param_card("Data Period", "Years of historical data to fetch")
+        data_years = st.slider(
+            "Data Period (years)",
+            min_value=3, max_value=10, value=5,
+            label_visibility="collapsed",
+        )
+
         refresh = st.checkbox("Refresh data cache", value=False)
+
+        auto_optimize = st.toggle(
+            "Auto-optimize parameters",
+            value=False,
+            help="Run a quick 81-combo grid search to find optimal parameters "
+                 "before running the backtest.",
+        )
 
         run_clicked = st.button(
             "Run Backtest", type="primary", use_container_width=True,
@@ -755,30 +807,36 @@ def _render_sidebar() -> dict:
             label_visibility="collapsed",
         )
 
+        opt = st.session_state.get("optimized_params")
+
         _param_card("Top N Assets", "Number of positions to hold simultaneously")
+        _default_top_n = opt.top_n if opt else TOP_N
         top_n = st.slider(
             "Top N Assets",
-            min_value=3, max_value=10 if is_etf_mode else 50,
-            value=min(TOP_N, 10) if is_etf_mode else TOP_N,
+            min_value=3, max_value=20 if is_etf_mode else 50,
+            value=min(_default_top_n, 20) if is_etf_mode else _default_top_n,
             label_visibility="collapsed",
         )
 
         _param_card("KAMA Period", "Adaptive MA lookback (trading days)")
+        _default_kama = opt.kama_period if opt else KAMA_PERIOD
         kama_period = st.slider(
-            "KAMA Period", min_value=5, max_value=50, value=KAMA_PERIOD,
+            "KAMA Period", min_value=5, max_value=50, value=_default_kama,
             label_visibility="collapsed",
         )
 
         _param_card("Lookback Period", "Momentum evaluation window (trading days)")
+        _default_lookback = opt.lookback_period if opt else LOOKBACK_PERIOD
         lookback_period = st.slider(
-            "Lookback Period", min_value=20, max_value=252, value=LOOKBACK_PERIOD,
+            "Lookback Period", min_value=20, max_value=252, value=_default_lookback,
             label_visibility="collapsed",
         )
 
         _param_card("KAMA Buffer", "Hysteresis threshold for regime flips")
+        _default_buffer = opt.kama_buffer if opt else KAMA_BUFFER
         kama_buffer = st.slider(
             "KAMA Buffer", min_value=0.0, max_value=0.05,
-            value=float(KAMA_BUFFER), step=0.001, format="%.3f",
+            value=float(_default_buffer), step=0.001, format="%.3f",
             label_visibility="collapsed",
         )
 
@@ -836,6 +894,13 @@ def _render_sidebar() -> dict:
                 label_visibility="collapsed",
             )
 
+        _param_card("Max Weight Per Position", "Cap on any single position (% of portfolio)")
+        max_weight = st.slider(
+            "Max Weight (%)",
+            min_value=5, max_value=50, value=15, step=1,
+            label_visibility="collapsed",
+        ) / 100.0
+
         # --- Regime filter ---
         st.markdown("---")
         enable_regime = st.toggle(
@@ -848,7 +913,9 @@ def _render_sidebar() -> dict:
     return {
         "universe_mode": universe_mode,
         "is_etf_mode": is_etf_mode,
+        "data_years": data_years,
         "refresh": refresh,
+        "auto_optimize": auto_optimize,
         "initial_capital": float(initial_capital),
         "top_n": top_n,
         "kama_period": kama_period,
@@ -860,6 +927,7 @@ def _render_sidebar() -> dict:
         "corr_lookback": corr_lookback,
         "sizing_mode": sizing_mode,
         "vol_lookback": vol_lookback,
+        "max_weight": max_weight,
         "enable_regime": enable_regime,
         "run_clicked": run_clicked,
     }
@@ -882,32 +950,87 @@ def main():
 
     if sidebar["run_clicked"]:
         universe = cached_fetch_etf()
-        cache_suffix = "_etf"
+        period = f"{sidebar['data_years']}y"
+        cache_suffix = f"_etf_{period}"
 
         close_prices, open_prices = cached_fetch_prices(
-            tuple(sorted(universe)), sidebar["refresh"], cache_suffix=cache_suffix,
+            tuple(sorted(universe)), sidebar["refresh"],
+            cache_suffix=cache_suffix, period=period,
         )
 
-        min_days = 756
+        min_days = int(sidebar["data_years"] * 252 * 0.6)
         # In ETF mode, SPY is tradable — do not exclude it
         valid = [
             t for t in close_prices.columns
             if len(close_prices[t].dropna()) >= min_days
         ]
 
-        params = StrategyParams(
-            kama_period=sidebar["kama_period"],
-            lookback_period=sidebar["lookback_period"],
-            top_n=sidebar["top_n"],
-            kama_buffer=sidebar["kama_buffer"],
-            use_risk_adjusted=sidebar["use_risk_adjusted"],
-            enable_regime_filter=sidebar["enable_regime"],
-            enable_correlation_filter=sidebar["enable_correlation"],
-            correlation_threshold=sidebar["corr_threshold"],
-            correlation_lookback=sidebar["corr_lookback"],
-            sizing_mode=sidebar["sizing_mode"],
-            volatility_lookback=sidebar["vol_lookback"],
-        )
+        # Auto-optimize: run quick grid search before simulation
+        if sidebar["auto_optimize"]:
+            with st.spinner("Auto-optimizing parameters (81 combos)..."):
+                from src.portfolio_sim.optimizer import (
+                    QUICK_GRID, find_best_params, run_sensitivity,
+                )
+                opt_result = run_sensitivity(
+                    close_prices, open_prices, valid,
+                    sidebar["initial_capital"], grid=QUICK_GRID,
+                )
+                best = find_best_params(opt_result)
+            if best is not None:
+                st.session_state["optimized_params"] = best
+                st.toast(
+                    f"Optimal: KAMA={best.kama_period}, "
+                    f"Lookback={best.lookback_period}, "
+                    f"Buffer={best.kama_buffer}, "
+                    f"Top N={best.top_n}",
+                    icon="✅",
+                )
+                # Use optimized params for this run
+                params = StrategyParams(
+                    kama_period=best.kama_period,
+                    lookback_period=best.lookback_period,
+                    top_n=best.top_n,
+                    kama_buffer=best.kama_buffer,
+                    use_risk_adjusted=sidebar["use_risk_adjusted"],
+                    enable_regime_filter=sidebar["enable_regime"],
+                    enable_correlation_filter=sidebar["enable_correlation"],
+                    correlation_threshold=sidebar["corr_threshold"],
+                    correlation_lookback=sidebar["corr_lookback"],
+                    sizing_mode=sidebar["sizing_mode"],
+                    volatility_lookback=sidebar["vol_lookback"],
+                    max_weight=sidebar["max_weight"],
+                )
+            else:
+                st.warning("Auto-optimization found no valid combinations. Using manual parameters.")
+                params = StrategyParams(
+                    kama_period=sidebar["kama_period"],
+                    lookback_period=sidebar["lookback_period"],
+                    top_n=sidebar["top_n"],
+                    kama_buffer=sidebar["kama_buffer"],
+                    use_risk_adjusted=sidebar["use_risk_adjusted"],
+                    enable_regime_filter=sidebar["enable_regime"],
+                    enable_correlation_filter=sidebar["enable_correlation"],
+                    correlation_threshold=sidebar["corr_threshold"],
+                    correlation_lookback=sidebar["corr_lookback"],
+                    sizing_mode=sidebar["sizing_mode"],
+                    volatility_lookback=sidebar["vol_lookback"],
+                    max_weight=sidebar["max_weight"],
+                )
+        else:
+            params = StrategyParams(
+                kama_period=sidebar["kama_period"],
+                lookback_period=sidebar["lookback_period"],
+                top_n=sidebar["top_n"],
+                kama_buffer=sidebar["kama_buffer"],
+                use_risk_adjusted=sidebar["use_risk_adjusted"],
+                enable_regime_filter=sidebar["enable_regime"],
+                enable_correlation_filter=sidebar["enable_correlation"],
+                correlation_threshold=sidebar["corr_threshold"],
+                correlation_lookback=sidebar["corr_lookback"],
+                sizing_mode=sidebar["sizing_mode"],
+                volatility_lookback=sidebar["vol_lookback"],
+                max_weight=sidebar["max_weight"],
+            )
 
         with st.spinner(f"Running simulation on {len(valid)} tickers..."):
             result = run_simulation(

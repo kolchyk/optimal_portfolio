@@ -9,7 +9,87 @@ from src.portfolio_sim.reporting import (
     compute_metrics,
     format_comparison_table,
     format_metrics_table,
+    compute_monthly_returns,
+    compute_yearly_returns,
+    compute_rolling_sharpe,
+    save_equity_png,
+    format_asset_report,
 )
+from src.portfolio_sim.models import SimulationResult
+
+
+def test_compute_monthly_returns():
+    """Verify monthly returns table structure."""
+    # Start earlier to ensure Jan is covered after pct_change
+    dates = pd.date_range("2022-12-01", periods=150, freq="D")
+    eq = pd.Series(np.linspace(100, 110, 150), index=dates)
+    table = compute_monthly_returns(eq)
+    assert isinstance(table, pd.DataFrame)
+    assert "Jan" in table.columns
+    assert 2023 in table.index
+
+
+def test_compute_yearly_returns():
+    """Verify yearly returns series."""
+    dates = pd.date_range("2022-01-01", periods=500, freq="D")
+    eq = pd.Series(np.linspace(100, 120, 500), index=dates)
+    yr = compute_yearly_returns(eq)
+    assert isinstance(yr, pd.Series)
+    assert 2023 in yr.index
+
+
+def test_compute_rolling_sharpe():
+    """Verify rolling Sharpe ratio."""
+    dates = pd.date_range("2023-01-01", periods=300, freq="B")
+    eq = pd.Series(np.exp(np.linspace(0, 0.1, 300)), index=dates)
+    rs = compute_rolling_sharpe(eq, window=20)
+    assert len(rs) == 300 - 1 - 20 + 1  # diff drops 1, rolling window drops 19
+
+
+def test_save_equity_png(tmp_path):
+    """Test saving PNG (with mock plt)."""
+    dates = pd.date_range("2023-01-01", periods=10)
+    eq = pd.Series(np.linspace(100, 110, 10), index=dates)
+    spy = pd.Series(np.linspace(100, 105, 10), index=dates)
+    
+    path = save_equity_png(eq, spy, tmp_path)
+    assert path.exists()
+    assert path.name == "equity_curve.png"
+
+
+def test_format_asset_report():
+    """Verify asset report formatting."""
+    dates = pd.date_range("2023-01-01", periods=5)
+    eq = pd.Series([10000, 10100, 10200, 10300, 10400], index=dates)
+    holdings = pd.DataFrame(
+        {"AAPL": [0, 10, 10, 10, 0], "MSFT": [0, 0, 5, 5, 5]},
+        index=dates
+    )
+    cash = pd.Series([10000, 8500, 7000, 7000, 8600], index=dates)
+    trade_log = [
+        {"date": "2023-01-02", "ticker": "AAPL", "action": "buy", "shares": 10, "price": 150},
+        {"date": "2023-01-05", "ticker": "AAPL", "action": "sell", "shares": 10, "price": 160},
+    ]
+    
+    sim_result = SimulationResult(
+        equity=eq,
+        spy_equity=eq * 0.95,
+        holdings_history=holdings,
+        cash_history=cash,
+        trade_log=trade_log,
+        regime_history=None
+    )
+    
+    close_prices = pd.DataFrame(
+        {"AAPL": [150, 152, 155, 158, 160], "MSFT": [250, 252, 255, 258, 260]},
+        index=dates
+    )
+    
+    report = format_asset_report(sim_result, close_prices)
+    assert "ASSET REPORT" in report
+    assert "AAPL" in report
+    assert "MSFT" in report
+    assert "Unique assets traded: 2" in report
 
 
 def test_metrics_constant_equity():

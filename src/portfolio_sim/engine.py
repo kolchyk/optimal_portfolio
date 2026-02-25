@@ -117,7 +117,7 @@ def run_simulation(
             shares_before = set(shares.keys())
             cash = _execute_trades(
                 shares, pending_trades, equity_at_open, daily_open,
-                p.top_n, weights=pending_weights,
+                p.top_n, weights=pending_weights, max_weight=p.max_weight,
             )
 
             # Record trades
@@ -240,6 +240,7 @@ def run_simulation(
                     vol_prices = close_prices.iloc[vol_start : idx_in_full + 1]
                     pending_weights = _compute_inverse_vol_weights(
                         buys_list, vol_prices, p.volatility_lookback,
+                        max_weight=p.max_weight,
                     )
 
     n = len(equity_values)
@@ -265,10 +266,47 @@ def run_simulation(
     )
 
 
+def _cap_and_redistribute(
+    weights: dict[str, float], max_weight: float,
+) -> dict[str, float]:
+    """Cap each weight at *max_weight* and redistribute excess proportionally.
+
+    Iterative: after redistribution some weights may exceed the cap again,
+    so we repeat until convergence (at most N rounds).
+    """
+    if max_weight >= 1.0:
+        return weights
+
+    result = dict(weights)
+    for _ in range(len(result)):
+        excess = 0.0
+        uncapped_total = 0.0
+        for t, w in result.items():
+            if w > max_weight:
+                excess += w - max_weight
+                result[t] = max_weight
+            elif w < max_weight:
+                uncapped_total += w
+            # w == max_weight: already at cap, skip
+
+        if excess < 1e-10:
+            break
+
+        if uncapped_total > 0:
+            for t in result:
+                if result[t] < max_weight:
+                    result[t] += excess * (result[t] / uncapped_total)
+        else:
+            break
+
+    return result
+
+
 def _compute_inverse_vol_weights(
     tickers_to_buy: list[str],
     close_prices_window: pd.DataFrame,
     volatility_lookback: int = 20,
+    max_weight: float = 1.0,
 ) -> dict[str, float]:
     """Compute inverse-volatility weights for a set of tickers.
 
@@ -300,7 +338,8 @@ def _compute_inverse_vol_weights(
         return {t: 1.0 / len(tickers_to_buy) for t in tickers_to_buy}
 
     total = sum(inv_vols.values())
-    return {t: v / total for t, v in inv_vols.items()}
+    weights = {t: v / total for t, v in inv_vols.items()}
+    return _cap_and_redistribute(weights, max_weight)
 
 
 def _execute_trades(
@@ -310,6 +349,7 @@ def _execute_trades(
     open_prices: pd.Series,
     top_n: int = StrategyParams().top_n,
     weights: dict[str, float] | None = None,
+    max_weight: float = 1.0,
 ) -> float:
     """Execute trades. Mutates ``shares`` in place. Returns remaining cash.
 
@@ -320,6 +360,7 @@ def _execute_trades(
 
     When *weights* is provided (risk parity mode), each buy's allocation is
     equity_at_open * weights[t]. Otherwise strict 1/top_n equal weight.
+    *max_weight* caps any single position at equity_at_open * max_weight.
     """
     total_cost = 0.0
 
@@ -353,7 +394,10 @@ def _execute_trades(
             if weights is not None and t in weights:
                 max_allocation = equity_at_open * weights[t]
             else:
-                max_allocation = equity_at_open / top_n
+                max_allocation = min(
+                    equity_at_open / top_n,
+                    equity_at_open * max_weight,
+                )
             allocation = min(max_allocation, available)
             if price > 0 and allocation > 0:
                 net_investment = allocation / (1 + COST_RATE)

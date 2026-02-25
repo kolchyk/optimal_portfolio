@@ -47,6 +47,13 @@ SENSITIVITY_GRID: dict[str, list] = {
     "top_n": [10, 15, 20, 25, 30],
 }
 
+QUICK_GRID: dict[str, list] = {
+    "kama_period": [10, 20, 40],
+    "lookback_period": [40, 90, 150],
+    "kama_buffer": [0.005, 0.01, 0.02],
+    "top_n": [5, 10, 15],
+}
+
 PARAM_NAMES: list[str] = ["kama_period", "lookback_period", "kama_buffer", "top_n"]
 
 
@@ -469,3 +476,21 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
     lines.append("=" * 70)
 
     return "\n".join(lines)
+
+
+def find_best_params(result: SensitivityResult) -> StrategyParams | None:
+    """Extract the best parameter combo from sensitivity grid results.
+
+    Returns StrategyParams for the combo with highest objective,
+    or None if no valid combo was found.
+    """
+    valid = result.grid_results[result.grid_results["objective"] > -999.0]
+    if valid.empty:
+        return None
+    best = valid.loc[valid["objective"].idxmax()]
+    return StrategyParams(
+        kama_period=int(best["kama_period"]),
+        lookback_period=int(best["lookback_period"]),
+        kama_buffer=float(best["kama_buffer"]),
+        top_n=int(best["top_n"]),
+    )

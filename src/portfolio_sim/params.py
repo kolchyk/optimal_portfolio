@@ -39,6 +39,9 @@ class StrategyParams:
     sizing_mode: str = "equal_weight"
     volatility_lookback: int = VOLATILITY_LOOKBACK
 
+    # Max weight per position (1.0 = no cap)
+    max_weight: float = 1.0
+
     @property
     def warmup(self) -> int:
         """Minimum bars needed before trading can start."""
