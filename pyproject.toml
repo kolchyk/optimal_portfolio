@@ -19,6 +19,9 @@ dependencies = [
     "optuna>=3.6.0",
 ]
 
+[project.scripts]
+portfolio = "src.portfolio_sim.cli:main"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"

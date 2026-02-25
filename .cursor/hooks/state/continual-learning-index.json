@@ -1,0 +1,169 @@
+{
+  "version": 1,
+  "transcripts": {
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/d7ce2a99-8ddf-4dd7-8cc2-5d23679a5854/d7ce2a99-8ddf-4dd7-8cc2-5d23679a5854.jsonl": {
+      "mtimeMs": 1771937781517,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/b5055bc7-5653-4bab-80b9-c7bbef3bae0f/b5055bc7-5653-4bab-80b9-c7bbef3bae0f.jsonl": {
+      "mtimeMs": 1771937895844,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/2236a367-5179-4b62-b89c-cf251a239ee4/2236a367-5179-4b62-b89c-cf251a239ee4.jsonl": {
+      "mtimeMs": 1771882359981,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/c08e4400-a89c-482d-8b65-73b283232431/c08e4400-a89c-482d-8b65-73b283232431.jsonl": {
+      "mtimeMs": 1772038128602,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/f90ca128-2b7c-4153-b523-444a5f383867/f90ca128-2b7c-4153-b523-444a5f383867.jsonl": {
+      "mtimeMs": 1772032896467,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/4c266be9-c799-4475-8343-7b6d03b27652/4c266be9-c799-4475-8343-7b6d03b27652.jsonl": {
+      "mtimeMs": 1771879787624,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/e04b38e6-4545-4b60-b4ef-6e8bf8c9f23d/e04b38e6-4545-4b60-b4ef-6e8bf8c9f23d.jsonl": {
+      "mtimeMs": 1771969424234,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/85f86ba1-9a48-4da2-a36e-f0748b4a9b1f/85f86ba1-9a48-4da2-a36e-f0748b4a9b1f.jsonl": {
+      "mtimeMs": 1772016579724,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/c38db9aa-f974-453a-946e-5d2ba423b97f/c38db9aa-f974-453a-946e-5d2ba423b97f.jsonl": {
+      "mtimeMs": 1772050144794,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/888ecfb4-f4df-4b28-a9c3-83ee4d473b22/888ecfb4-f4df-4b28-a9c3-83ee4d473b22.jsonl": {
+      "mtimeMs": 1771938005077,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/c0bed1e9-99ee-4f1b-9add-e58035ff8907/c0bed1e9-99ee-4f1b-9add-e58035ff8907.jsonl": {
+      "mtimeMs": 1771964825235,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/02e0d044-7df9-4a6f-a32f-479d0bc78558/02e0d044-7df9-4a6f-a32f-479d0bc78558.jsonl": {
+      "mtimeMs": 1771969858086,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/c0f9a6f8-8208-48d9-ac36-d7d1ee82b5c5/c0f9a6f8-8208-48d9-ac36-d7d1ee82b5c5.jsonl": {
+      "mtimeMs": 1771879672063,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/9077facf-ff6f-4778-a19a-6cdd0fc6cb48/9077facf-ff6f-4778-a19a-6cdd0fc6cb48.jsonl": {
+      "mtimeMs": 1772051196378,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/abd26f39-26e5-41df-aebf-af5c5ad49b61/abd26f39-26e5-41df-aebf-af5c5ad49b61.jsonl": {
+      "mtimeMs": 1772037273615,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/112ef76e-eefb-42db-8c23-58413a2503d6/112ef76e-eefb-42db-8c23-58413a2503d6.jsonl": {
+      "mtimeMs": 1771963470193,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/44c771f0-709a-45a5-b611-0ceae587c0f0/44c771f0-709a-45a5-b611-0ceae587c0f0.jsonl": {
+      "mtimeMs": 1771967744938,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/f47cebf9-5d08-4370-a2e0-749f0fd70734/f47cebf9-5d08-4370-a2e0-749f0fd70734.jsonl": {
+      "mtimeMs": 1772025760297,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/48fb73b4-3930-47b3-a7b6-9a04b3913b7f/48fb73b4-3930-47b3-a7b6-9a04b3913b7f.jsonl": {
+      "mtimeMs": 1772050898179,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/08c3444d-c7bd-40a6-b9f4-98cb8cf84aad/08c3444d-c7bd-40a6-b9f4-98cb8cf84aad.jsonl": {
+      "mtimeMs": 1771969347758,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/a13b8b42-18b5-4932-85b5-41804cccc3d5/a13b8b42-18b5-4932-85b5-41804cccc3d5.jsonl": {
+      "mtimeMs": 1771967801541,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/615bc2e8-ab6d-4558-b571-2a6d7eb4b26f/615bc2e8-ab6d-4558-b571-2a6d7eb4b26f.jsonl": {
+      "mtimeMs": 1772037977208,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/c9d481c9-e3f8-4cb0-b2a1-5a558ba0eab0/c9d481c9-e3f8-4cb0-b2a1-5a558ba0eab0.jsonl": {
+      "mtimeMs": 1772032680638,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/cbe15ade-c84a-4407-ad1b-2a25de0d0857/cbe15ade-c84a-4407-ad1b-2a25de0d0857.jsonl": {
+      "mtimeMs": 1771882859170,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/35207ef8-8e47-4b08-b521-b74a66d861e8/35207ef8-8e47-4b08-b521-b74a66d861e8.jsonl": {
+      "mtimeMs": 1771882264429,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/2d94d6b3-2d25-4bcc-88e2-97c28cb7877f/2d94d6b3-2d25-4bcc-88e2-97c28cb7877f.jsonl": {
+      "mtimeMs": 1771967595750,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/355bd68f-fee2-4b3f-8f5d-8d4a68b816d5/355bd68f-fee2-4b3f-8f5d-8d4a68b816d5.jsonl": {
+      "mtimeMs": 1771964462437,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/64cd85f9-73e6-4b5f-ba2a-bd6b5ecb791a/64cd85f9-73e6-4b5f-ba2a-bd6b5ecb791a.jsonl": {
+      "mtimeMs": 1772032630623,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/fa3a5db2-17cf-4ae4-99e4-77e14ae6b584/fa3a5db2-17cf-4ae4-99e4-77e14ae6b584.jsonl": {
+      "mtimeMs": 1771964441819,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/00077018-b7f4-4b6f-8896-45f8fc485f0b/00077018-b7f4-4b6f-8896-45f8fc485f0b.jsonl": {
+      "mtimeMs": 1772033526429,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/bbdd9b72-5dc6-4931-b9d4-b9b6e981e40c/bbdd9b72-5dc6-4931-b9d4-b9b6e981e40c.jsonl": {
+      "mtimeMs": 1772016393853,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/b8c10fca-3ecb-4ed4-9dea-e20665811091/b8c10fca-3ecb-4ed4-9dea-e20665811091.jsonl": {
+      "mtimeMs": 1771937937033,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/9e732068-4e88-499c-86b4-3299a3040a9d/9e732068-4e88-499c-86b4-3299a3040a9d.jsonl": {
+      "mtimeMs": 1772033761660,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/d9cb7c99-6503-4f6f-90d7-d1a625572407/d9cb7c99-6503-4f6f-90d7-d1a625572407.jsonl": {
+      "mtimeMs": 1772033983648,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/f5115895-a54f-481a-bea7-d3a7855909fe/f5115895-a54f-481a-bea7-d3a7855909fe.jsonl": {
+      "mtimeMs": 1771966959271,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/9180de60-31a3-47a3-b5b3-e636f858edc0/9180de60-31a3-47a3-b5b3-e636f858edc0.jsonl": {
+      "mtimeMs": 1771969127135,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/a92fb2ac-6b21-47c1-870f-81a1a3eb2a9c/a92fb2ac-6b21-47c1-870f-81a1a3eb2a9c.jsonl": {
+      "mtimeMs": 1772049664746,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/7fb1003b-3770-45b4-95fe-9dfb9331b5ac/7fb1003b-3770-45b4-95fe-9dfb9331b5ac.jsonl": {
+      "mtimeMs": 1771882673471,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/db605126-4096-44d2-8477-9cb4d8895f9a/db605126-4096-44d2-8477-9cb4d8895f9a.jsonl": {
+      "mtimeMs": 1772016532341,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/75c5a685-59b2-4dde-9aa2-6b089dd7edbb/75c5a685-59b2-4dde-9aa2-6b089dd7edbb.jsonl": {
+      "mtimeMs": 1772014162917,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    },
+    "/Users/serhii/.cursor/projects/Users-serhii-Github-optimal-portfolio/agent-transcripts/8e790e23-4f89-4ded-9157-31458b19ee51/8e790e23-4f89-4ded-9157-31458b19ee51.jsonl": {
+      "mtimeMs": 1772038117706,
+      "lastProcessedAt": "2026-02-25T20:26:40.971577+00:00"
+    }
+  }
+}

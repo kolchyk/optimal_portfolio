@@ -1,13 +1,6 @@
-"""CLI entry point for parameter sensitivity analysis.
+"""Parameter sensitivity analysis (Optuna TPE)."""
 
-Usage:
-    python run_optimizer.py
-    python run_optimizer.py --period 10y
-    python run_optimizer.py --period 10y --n-workers 4
-    python run_optimizer.py --refresh              # Force re-download data
-"""
-
-import argparse
+import sys
 
 from src.portfolio_sim.cli_utils import (
     create_output_dir,
@@ -15,7 +8,7 @@ from src.portfolio_sim.cli_utils import (
     setup_logging,
 )
 from src.portfolio_sim.config import INITIAL_CAPITAL
-from src.portfolio_sim.data import fetch_price_data, fetch_etf_tickers
+from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.optimizer import (
     format_sensitivity_report,
@@ -24,52 +17,54 @@ from src.portfolio_sim.optimizer import (
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import format_asset_report, save_equity_png
 
+COMMAND_NAME = "optimize"
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Parameter sensitivity analysis for KAMA momentum strategy"
+
+def register(subparsers) -> None:
+    p = subparsers.add_parser(
+        COMMAND_NAME, help="Parameter sensitivity analysis (Optuna TPE)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--refresh", action="store_true",
         help="Force refresh data cache from yfinance",
     )
-    parser.add_argument(
+    p.add_argument(
         "--period", default="10y",
         help="yfinance period string (default: 10y)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--n-workers", type=int, default=None,
         help="Number of parallel workers (default: cpu_count - 1)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--n-trials", type=int, default=200,
         help="Number of Optuna trials for sensitivity analysis (default: 200)",
     )
-    return parser.parse_args()
 
 
-def main():
-    args = parse_args()
-
+def run(args) -> None:
     setup_logging()
     output_dir = create_output_dir("sens")
 
-    # Fetch data
     print("\nUsing cross-asset ETF universe...")
     tickers = fetch_etf_tickers()
     print(f"Universe: {len(tickers)} tickers")
 
+    min_days = 756
     print(f"Downloading price data ({args.period})...")
     close_prices, open_prices = fetch_price_data(
-        tickers, period=args.period, refresh=args.refresh, cache_suffix="_etf"
+        tickers, period=args.period, refresh=args.refresh,
+        cache_suffix="_etf", min_rows=min_days,
     )
 
-    # Filter tickers with sufficient history
-    min_days = 756
     valid_tickers = filter_valid_tickers(close_prices, min_days)
     print(f"Tradable tickers with {min_days}+ days: {len(valid_tickers)}")
 
-    # Run sensitivity analysis
+    if not valid_tickers:
+        print(f"\nERROR: No tickers with {min_days}+ trading days.")
+        print("Try: python -m src.portfolio_sim optimize --refresh")
+        sys.exit(1)
+
     base_params = StrategyParams()
     print(f"\nStarting sensitivity analysis (Optuna TPE, {args.n_trials} trials)...")
     print(f"  Base params: kama={base_params.kama_period}, "
@@ -87,36 +82,26 @@ def main():
         n_workers=args.n_workers,
     )
 
-    # Report
     report = format_sensitivity_report(result)
     print(f"\n{report}")
 
-    # Save report
     report_path = output_dir / "sensitivity_report.txt"
     report_path.write_text(report)
     print(f"\nReport saved to {report_path}")
 
-    # Save full trial results
     grid_path = output_dir / "trial_results.csv"
     result.grid_results.to_csv(grid_path, index=False)
     print(f"Trial results saved to {grid_path}")
 
-    # Run base-params simulation for equity chart and asset report
     print("\nRunning base-params simulation for detailed report...")
     sim_result = run_simulation(
         close_prices, open_prices, valid_tickers, INITIAL_CAPITAL,
         params=base_params,
     )
 
-    # Equity curve chart
     save_equity_png(sim_result.equity, sim_result.spy_equity, output_dir)
 
-    # Asset report
     asset_report = format_asset_report(sim_result, close_prices, asset_meta=None)
     asset_report_path = output_dir / "asset_report.txt"
     asset_report_path.write_text(asset_report)
     print(f"Asset report saved to {asset_report_path}")
-
-
-if __name__ == "__main__":
-    main()

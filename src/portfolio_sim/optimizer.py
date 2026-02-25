@@ -41,8 +41,8 @@ log = structlog.get_logger()
 # ---------------------------------------------------------------------------
 SENSITIVITY_SPACE: dict[str, dict] = {
     "kama_period": {"type": "categorical", "choices": [10, 15, 20, 30, 40]},
-    "lookback_period": {"type": "int", "low": 20, "high": 120, "step": 10},
-    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
+    "lookback_period": {"type": "int", "low": 20, "high": 150, "step": 10},
+    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.001},
     "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
 }
 

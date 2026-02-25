@@ -39,6 +39,7 @@ def fetch_price_data(
     period: str = "5y",
     refresh: bool = False,
     cache_suffix: str = "",
+    min_rows: int = 0,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fetch Close and Open prices for all tickers.
 
@@ -51,6 +52,8 @@ def fetch_price_data(
         refresh: force re-download and overwrite cache.
         cache_suffix: appended to cache filenames to separate ETF vs S&P 500
                       caches (e.g. "_etf").
+        min_rows: if > 0 and the cached data has fewer rows, automatically
+                  re-download with the requested *period*.
 
     Cache: if output/cache/ contains the parquet files, loads from disk and
     does not download. Pass refresh=True to force re-download.
@@ -59,10 +62,18 @@ def fetch_price_data(
     open_cache = CACHE_DIR / f"open_prices{cache_suffix}.parquet"
 
     if close_cache.exists() and open_cache.exists() and not refresh:
-        log.info("Loading prices from Parquet cache (skip download)", suffix=cache_suffix)
         close_df = pd.read_parquet(close_cache)
         open_df = pd.read_parquet(open_cache)
-        return close_df, open_df
+        if min_rows and len(close_df) < min_rows:
+            log.warning(
+                "Cache has fewer rows than required, re-downloading",
+                cached_rows=len(close_df),
+                min_rows=min_rows,
+                period=period,
+            )
+        else:
+            log.info("Loading prices from Parquet cache (skip download)", suffix=cache_suffix)
+            return close_df, open_df
 
     full_list = list(set(tickers + [SPY_TICKER]))
     log.info("Downloading prices via yfinance", n_tickers=len(full_list), period=period)

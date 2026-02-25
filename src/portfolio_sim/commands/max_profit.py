@@ -1,15 +1,4 @@
-"""CLI entry point for maximum profit parameter search.
-
-Usage:
-    python run_max_profit.py                          # Both universes, 5y
-    python run_max_profit.py --universe sp500          # S&P 500 only
-    python run_max_profit.py --universe etf             # ETF only
-    python run_max_profit.py --period 5y --n-workers 8
-    python run_max_profit.py --refresh                  # Force refresh cache
-    python run_max_profit.py --max-dd 0.40              # Tighter drawdown limit
-"""
-
-import argparse
+"""Maximum profit parameter search (TPE or Pareto NSGA-II)."""
 
 from src.portfolio_sim.cli_utils import (
     create_output_dir,
@@ -29,41 +18,40 @@ from src.portfolio_sim.max_profit import (
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics, format_comparison_table
 
+COMMAND_NAME = "max-profit"
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Maximum profit parameter search for KAMA momentum strategy"
+
+def register(subparsers) -> None:
+    p = subparsers.add_parser(
+        COMMAND_NAME, help="Maximum profit parameter search (TPE or Pareto NSGA-II)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--refresh", action="store_true",
         help="Force refresh data cache from yfinance",
     )
-    parser.add_argument(
+    p.add_argument(
         "--period", default="2y",
-        help="yfinance period string (default: 5y)",
+        help="yfinance period string (default: 2y)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--n-workers", type=int, default=None,
         help="Number of parallel workers (default: cpu_count - 1)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--max-dd", type=float, default=0.60,
         help="Max drawdown rejection limit (default: 0.60 = 60%%)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--n-trials", type=int, default=10,
         help="Number of Optuna trials per universe (default: 500)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--pareto", action="store_true",
         help="Use multi-objective Pareto search (NSGA-II) instead of single-objective TPE",
     )
-    return parser.parse_args()
 
 
-def run_verification(
-    close_prices, open_prices, tickers, initial_capital, params, universe_name,
-):
+def _run_verification(close_prices, open_prices, tickers, initial_capital, params, universe_name):
     """Run simulation with given params and print metrics."""
     print(f"\n{'=' * 70}")
     print(f"VERIFICATION — {universe_name} (default params)")
@@ -81,9 +69,7 @@ def run_verification(
     return strat_metrics
 
 
-def main():
-    args = parse_args()
-
+def run(args) -> None:
     setup_logging()
     output_dir = create_output_dir("max_profit")
 
@@ -93,9 +79,7 @@ def main():
     summary_lines.append(f"Period: {args.period}  |  Max DD limit: {args.max_dd:.0%}")
     summary_lines.append("=" * 90)
 
-    # ------------------------------------------------------------------
     # ETF
-    # ------------------------------------------------------------------
     print("\nFetching ETF universe...")
     etf_tickers = fetch_etf_tickers()
     print(f"Universe: {len(etf_tickers)} tickers")
@@ -116,13 +100,11 @@ def main():
     valid_etf = filter_valid_tickers(close_etf, min_days)
     print(f"Tradable tickers with {min_days}+ days: {len(valid_etf)}")
 
-    # Part 1: Verification
-    run_verification(
+    _run_verification(
         close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
         etf_params, "Cross-Asset ETF",
     )
 
-    # Part 2: Optuna search
     fixed = {
         "enable_correlation_filter": True,
         "correlation_threshold": 0.65,
@@ -175,7 +157,6 @@ def main():
 
     print(f"\n{report_etf}")
 
-    # Save
     etf_result.grid_results.to_csv(
         output_dir / "grid_results_etf.csv", index=False,
     )
@@ -183,13 +164,6 @@ def main():
     summary_lines.append("")
     summary_lines.append(report_etf)
 
-    # ------------------------------------------------------------------
-    # Save combined summary
-    # ------------------------------------------------------------------
     summary = "\n".join(summary_lines)
     (output_dir / "summary.txt").write_text(summary)
     print(f"\nAll results saved to {output_dir}")
-
-
-if __name__ == "__main__":
-    main()

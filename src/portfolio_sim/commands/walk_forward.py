@@ -1,13 +1,8 @@
-"""CLI entry point for walk-forward optimization.
+"""Walk-forward optimization."""
 
-Usage:
-    python run_walk_forward.py
-    python run_walk_forward.py --period 10y
-    python run_walk_forward.py --period 10y --n-trials 100 --oos-days 252
-    python run_walk_forward.py --refresh
-"""
+import sys
 
-import argparse
+import pandas as pd
 
 from src.portfolio_sim.cli_utils import (
     create_output_dir,
@@ -19,60 +14,62 @@ from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.walk_forward import format_wfo_report, run_walk_forward
 
+COMMAND_NAME = "walk-forward"
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Walk-forward optimization for KAMA momentum strategy"
+
+def register(subparsers) -> None:
+    p = subparsers.add_parser(
+        COMMAND_NAME, help="Walk-forward optimization",
     )
-    parser.add_argument(
+    p.add_argument(
         "--refresh", action="store_true",
         help="Force refresh data cache from yfinance",
     )
-    parser.add_argument(
+    p.add_argument(
         "--period", default="10y",
         help="yfinance period string (default: 10y)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--n-workers", type=int, default=None,
         help="Number of parallel workers (default: cpu_count - 1)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--n-trials", type=int, default=100,
         help="Number of Optuna trials per WFO step (default: 100)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--oos-days", type=int, default=252,
         help="OOS window size in trading days (default: 252 ~ 1 year)",
     )
-    parser.add_argument(
+    p.add_argument(
         "--min-is-days", type=int, default=756,
         help="Minimum IS window size in trading days (default: 756 ~ 3 years)",
     )
-    return parser.parse_args()
 
 
-def main():
-    args = parse_args()
-
+def run(args) -> None:
     setup_logging()
     output_dir = create_output_dir("wfo")
 
-    # Fetch data
     print("\nUsing cross-asset ETF universe...")
     tickers = fetch_etf_tickers()
     print(f"Universe: {len(tickers)} tickers")
 
+    min_days = args.min_is_days
     print(f"Downloading price data ({args.period})...")
     close_prices, open_prices = fetch_price_data(
-        tickers, period=args.period, refresh=args.refresh, cache_suffix="_etf",
+        tickers, period=args.period, refresh=args.refresh,
+        cache_suffix="_etf", min_rows=min_days,
     )
 
-    # Filter tickers with sufficient history
-    min_days = args.min_is_days
     valid_tickers = filter_valid_tickers(close_prices, min_days)
     print(f"Tradable tickers with {min_days}+ days: {len(valid_tickers)}")
 
-    # Run walk-forward optimization
+    if not valid_tickers:
+        print(f"\nERROR: No tickers with {min_days}+ trading days.")
+        print("Try: python -m src.portfolio_sim walk-forward --refresh")
+        sys.exit(1)
+
     base_params = StrategyParams()
     print(f"\nStarting walk-forward optimization...")
     print(f"  IS minimum: {args.min_is_days} days (~{args.min_is_days / 252:.0f} years)")
@@ -92,21 +89,17 @@ def main():
         oos_days=args.oos_days,
     )
 
-    # Report
     report = format_wfo_report(result)
     print(f"\n{report}")
 
-    # Save report
     report_path = output_dir / "wfo_report.txt"
     report_path.write_text(report)
     print(f"\nReport saved to {report_path}")
 
-    # Save stitched OOS equity
     equity_path = output_dir / "stitched_oos_equity.csv"
     result.stitched_equity.to_csv(equity_path, header=True)
     print(f"Stitched OOS equity saved to {equity_path}")
 
-    # Save per-step details
     step_rows = []
     for step in result.steps:
         step_rows.append({
@@ -126,18 +119,12 @@ def main():
             "oos_sharpe": step.oos_metrics.get("sharpe", 0),
         })
 
-    import pandas as pd
     steps_df = pd.DataFrame(step_rows)
     steps_path = output_dir / "wfo_steps.csv"
     steps_df.to_csv(steps_path, index=False)
     print(f"Step details saved to {steps_path}")
 
-    # Print recommended parameters
     fp = result.final_params
     print(f"\nRecommended live parameters:")
     print(f"  kama_period={fp.kama_period}, lookback_period={fp.lookback_period}, "
           f"kama_buffer={fp.kama_buffer}, top_n={fp.top_n}")
-
-
-if __name__ == "__main__":
-    main()
