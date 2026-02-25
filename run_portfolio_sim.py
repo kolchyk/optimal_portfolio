@@ -1,10 +1,11 @@
 """CLI entry point for KAMA momentum portfolio simulation.
 
 Usage:
-    python run_portfolio_sim.py
-    python run_portfolio_sim.py --refresh
+    python run_portfolio_sim.py                          # S&P 500, default params
+    python run_portfolio_sim.py --universe etf            # Cross-asset ETFs
+    python run_portfolio_sim.py --refresh                 # Force refresh cache
     python run_portfolio_sim.py --period 10y
-    python run_portfolio_sim.py --cache-only --refresh   # Download & save to cache, skip sim
+    python run_portfolio_sim.py --cache-only --refresh    # Download & cache only
 """
 
 import argparse
@@ -15,8 +16,9 @@ from pathlib import Path
 import structlog
 
 from src.portfolio_sim.config import INITIAL_CAPITAL
-from src.portfolio_sim.data import fetch_price_data, fetch_sp500_tickers
+from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data, fetch_sp500_tickers
 from src.portfolio_sim.engine import run_simulation
+from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import (
     compute_metrics,
     format_comparison_table,
@@ -26,7 +28,11 @@ from src.portfolio_sim.reporting import (
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="KAMA Momentum Strategy -- S&P 500 backtest"
+        description="KAMA Momentum Strategy -- portfolio backtest"
+    )
+    parser.add_argument(
+        "--universe", choices=["sp500", "etf"], default="sp500",
+        help="Asset universe: sp500 (~500 stocks) or etf (10 cross-asset ETFs)",
     )
     parser.add_argument(
         "--refresh", action="store_true",
@@ -62,17 +68,26 @@ def main():
     output_dir = Path("output") / f"sim_{dt}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fetch S&P 500 tickers and price data
-    print("\nFetching S&P 500 constituents...")
-    sp500_tickers = fetch_sp500_tickers()
-    print(f"S&P 500: {len(sp500_tickers)} tickers")
+    is_etf = args.universe == "etf"
+    cache_suffix = "_etf" if is_etf else ""
+
+    # Fetch tickers
+    if is_etf:
+        print("\nUsing cross-asset ETF universe...")
+        tickers = fetch_etf_tickers()
+    else:
+        print("\nFetching S&P 500 constituents...")
+        tickers = fetch_sp500_tickers()
+    print(f"Universe: {len(tickers)} tickers")
 
     if args.cache_only:
         print(f"Downloading price data ({args.period}) and saving to cache...")
     else:
         print(f"Downloading price data ({args.period})...")
     close_prices, open_prices = fetch_price_data(
-        sp500_tickers, period=args.period, refresh=args.refresh or args.cache_only
+        tickers, period=args.period,
+        refresh=args.refresh or args.cache_only,
+        cache_suffix=cache_suffix,
     )
 
     if args.cache_only:
@@ -82,17 +97,35 @@ def main():
 
     # Filter tickers with sufficient history
     min_days = 756  # ~3 years
-    valid_tickers = [
-        t for t in close_prices.columns
-        if t != "SPY" and len(close_prices[t].dropna()) >= min_days
-    ]
+    if is_etf:
+        # In ETF mode, SPY is tradable — do not exclude it
+        valid_tickers = [
+            t for t in close_prices.columns
+            if len(close_prices[t].dropna()) >= min_days
+        ]
+    else:
+        valid_tickers = [
+            t for t in close_prices.columns
+            if t != "SPY" and len(close_prices[t].dropna()) >= min_days
+        ]
     print(f"Tradable tickers with {min_days}+ days: {len(valid_tickers)}")
+
+    # Build params for the selected universe
+    if is_etf:
+        params = StrategyParams(
+            use_risk_adjusted=True,
+            enable_regime_filter=False,
+            enable_correlation_filter=True,
+            sizing_mode="risk_parity",
+        )
+    else:
+        params = StrategyParams()
 
     # Run simulation
     print("\nRunning simulation...")
     result = run_simulation(
         close_prices, open_prices, valid_tickers, INITIAL_CAPITAL,
-        show_progress=True,
+        params=params, show_progress=True,
     )
 
     # Report

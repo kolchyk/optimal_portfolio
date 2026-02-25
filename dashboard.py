@@ -4,22 +4,25 @@ Run with: streamlit run dashboard.py
 """
 
 import logging
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import scipy.optimize as sco
 import streamlit as st
 import structlog
 
 from src.portfolio_sim.config import (
+    CORRELATION_LOOKBACK,
+    CORRELATION_THRESHOLD,
     INITIAL_CAPITAL,
     KAMA_BUFFER,
     KAMA_PERIOD,
     LOOKBACK_PERIOD,
     TOP_N,
+    VOLATILITY_LOOKBACK,
 )
-from src.portfolio_sim.data import fetch_price_data, fetch_sp500_tickers
+from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data, fetch_sp500_tickers
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.models import SimulationResult
 from src.portfolio_sim.params import StrategyParams
@@ -41,7 +44,7 @@ st.set_page_config(
 # ---------------------------------------------------------------------------
 # Theme / CSS
 # ---------------------------------------------------------------------------
-CHART_TEMPLATE = "plotly_dark"
+CHART_TEMPLATE = "plotly_white"
 COLOR_STRATEGY = "#2962FF"
 COLOR_BENCHMARK = "#888888"
 COLOR_POSITIVE = "#00c853"
@@ -49,20 +52,23 @@ COLOR_NEGATIVE = "#ff1744"
 COLOR_DRAWDOWN = "#e74c3c"
 COLOR_BULL_BG = "rgba(0, 200, 83, 0.07)"
 COLOR_BEAR_BG = "rgba(255, 23, 68, 0.07)"
+COLOR_FRONTIER = "#FFD700"
+COLOR_PORTFOLIO = "#00E676"
 
 
 def _inject_css():
     st.markdown(
         """
         <style>
+        /* --- Metric cards --- */
         .metric-card {
-            background: #1e1e2f;
+            background: #f5f5f5;
             border-radius: 8px;
             padding: 14px 18px;
             margin: 4px 0;
         }
         .metric-card .label {
-            color: #999;
+            color: #666;
             font-size: 0.8rem;
             margin-bottom: 2px;
             text-transform: uppercase;
@@ -77,10 +83,47 @@ def _inject_css():
         .metric-card.negative { border-left: 4px solid #ff1744; }
         .metric-card.negative .value { color: #ff1744; }
         .metric-card.neutral { border-left: 4px solid #888; }
-        .metric-card.neutral .value { color: #e0e0e0; }
+        .metric-card.neutral .value { color: #333; }
         .section-divider {
-            border-top: 1px solid #333;
+            border-top: 1px solid #ddd;
             margin: 1.5rem 0 1rem 0;
+        }
+
+        /* --- Sidebar --- */
+        [data-testid="stSidebar"] {
+            background: linear-gradient(180deg, #f8f9fa 0%, #e9ecef 100%);
+        }
+        .sidebar-section {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #333;
+            padding-bottom: 6px;
+            margin-bottom: 10px;
+            border-bottom: 2px solid;
+            border-image: linear-gradient(90deg, #2962FF 0%, transparent 100%) 1;
+        }
+        .param-card {
+            background: rgba(0, 0, 0, 0.03);
+            border: 1px solid rgba(0, 0, 0, 0.08);
+            border-radius: 10px;
+            padding: 10px 14px 6px 14px;
+            margin-bottom: 6px;
+        }
+        .param-card .param-label {
+            font-size: 0.72rem;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            margin-bottom: 2px;
+        }
+        .param-card .param-desc {
+            font-size: 0.68rem;
+            color: #999;
+            margin-top: 2px;
+        }
+        [data-testid="stSidebar"] .stSlider [data-baseweb="slider"] [role="slider"] {
+            background-color: #2962FF;
+            border-color: #2962FF;
         }
         </style>
         """,
@@ -116,19 +159,15 @@ def cached_fetch_sp500():
     return fetch_sp500_tickers()
 
 
+@st.cache_data(show_spinner="Fetching ETF tickers...")
+def cached_fetch_etf():
+    return fetch_etf_tickers()
+
+
 @st.cache_data(show_spinner="Downloading price data...")
-def cached_fetch_prices(tickers_tuple: tuple, refresh: bool):
-    return fetch_price_data(list(tickers_tuple), refresh=refresh)
+def cached_fetch_prices(tickers_tuple: tuple, refresh: bool, cache_suffix: str = ""):
+    return fetch_price_data(list(tickers_tuple), refresh=refresh, cache_suffix=cache_suffix)
 
-
-@st.cache_data
-def load_sector_map() -> pd.DataFrame:
-    csv_path = Path("sp500_companies.csv")
-    if csv_path.exists():
-        df = pd.read_csv(csv_path)
-        df["Symbol"] = df["Symbol"].str.replace(".", "-", regex=False)
-        return df[["Symbol", "Sector"]].dropna()
-    return pd.DataFrame(columns=["Symbol", "Sector"])
 
 
 # ---------------------------------------------------------------------------
@@ -236,14 +275,15 @@ def plot_equity_curve(
         )
     )
 
-    # Regime shading
-    regime = result.regime_history
-    changes = regime.ne(regime.shift()).cumsum()
-    for _, group in regime.groupby(changes):
-        start = group.index[0]
-        end = group.index[-1]
-        color = COLOR_BULL_BG if group.iloc[0] else COLOR_BEAR_BG
-        fig.add_vrect(x0=start, x1=end, fillcolor=color, line_width=0, layer="below")
+    # Regime shading (only when regime filter is enabled)
+    if result.regime_history is not None:
+        regime = result.regime_history
+        changes = regime.ne(regime.shift()).cumsum()
+        for _, group in regime.groupby(changes):
+            start = group.index[0]
+            end = group.index[-1]
+            color = COLOR_BULL_BG if group.iloc[0] else COLOR_BEAR_BG
+            fig.add_vrect(x0=start, x1=end, fillcolor=color, line_width=0, layer="below")
 
     yaxis_type = "log" if log_scale else "linear"
     fig.update_layout(
@@ -412,7 +452,7 @@ def plot_holdings_pie(
             hole=0.4,
             textinfo="label+percent",
             textposition="outside",
-            marker=dict(line=dict(color="#1e1e2f", width=1)),
+            marker=dict(line=dict(color="#ffffff", width=1)),
         )
     )
     fig.update_layout(
@@ -457,6 +497,191 @@ def plot_holdings_over_time(
     return fig
 
 
+def compute_efficient_frontier(
+    close_prices: pd.DataFrame,
+    n_points: int = 50,
+) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
+    """Compute the efficient frontier for the given asset universe.
+
+    Returns (frontier_vols, frontier_rets, asset_stats) where asset_stats is
+    a DataFrame with columns ['ticker', 'ann_return', 'ann_vol'].
+    """
+    daily_returns = close_prices.pct_change().dropna(how="all")
+    valid_cols = [
+        c for c in daily_returns.columns
+        if daily_returns[c].dropna().shape[0] >= 252
+    ]
+    daily_returns = daily_returns[valid_cols].dropna()
+
+    n_assets = len(valid_cols)
+    if n_assets < 2:
+        return np.array([]), np.array([]), pd.DataFrame()
+
+    mean_daily = daily_returns.mean().values
+    cov_daily = daily_returns.cov().values
+    ann_returns = mean_daily * 252
+    ann_cov = cov_daily * 252
+    # Small regularization for numerical stability
+    ann_cov += np.eye(n_assets) * 1e-8
+
+    ann_vols = np.sqrt(np.diag(ann_cov))
+    asset_stats = pd.DataFrame({
+        "ticker": valid_cols,
+        "ann_return": ann_returns,
+        "ann_vol": ann_vols,
+    })
+
+    def port_vol(w):
+        return np.sqrt(w @ ann_cov @ w)
+
+    def port_ret(w):
+        return w @ ann_returns
+
+    constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1.0}]
+    bounds = tuple((0.0, 1.0) for _ in range(n_assets))
+    w0 = np.ones(n_assets) / n_assets
+
+    # Min variance portfolio
+    res_min = sco.minimize(port_vol, w0, method="SLSQP",
+                           bounds=bounds, constraints=constraints)
+    min_ret = port_ret(res_min.x)
+    max_ret = float(ann_returns.max())
+
+    target_returns = np.linspace(min_ret, max_ret, n_points)
+    frontier_vols = []
+    frontier_rets = []
+
+    for target in target_returns:
+        cons = [
+            {"type": "eq", "fun": lambda w: np.sum(w) - 1.0},
+            {"type": "eq", "fun": lambda w, t=target: port_ret(w) - t},
+        ]
+        res = sco.minimize(port_vol, w0, method="SLSQP",
+                           bounds=bounds, constraints=cons,
+                           options={"ftol": 1e-9, "maxiter": 1000})
+        if res.success:
+            frontier_vols.append(port_vol(res.x))
+            frontier_rets.append(port_ret(res.x))
+
+    return np.array(frontier_vols), np.array(frontier_rets), asset_stats
+
+
+def plot_risk_return_scatter(
+    close_prices: pd.DataFrame,
+    result: SimulationResult | None = None,
+) -> go.Figure:
+    """Plot risk-return scatter of individual assets with efficient frontier."""
+    asset_cols = [c for c in close_prices.columns if c != "SPY"]
+    asset_prices = close_prices[asset_cols]
+
+    frontier_vols, frontier_rets, asset_stats = compute_efficient_frontier(
+        asset_prices
+    )
+
+    fig = go.Figure()
+
+    # Individual asset scatter
+    if not asset_stats.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=asset_stats["ann_vol"].values * 100,
+                y=asset_stats["ann_return"].values * 100,
+                mode="markers",
+                name="Assets",
+                marker=dict(
+                    size=6,
+                    color=asset_stats["ann_return"].values * 100,
+                    colorscale="RdYlGn",
+                    showscale=True,
+                    colorbar=dict(title="Return %", ticksuffix="%"),
+                    opacity=0.7,
+                    line=dict(width=0.5, color="#333"),
+                ),
+                text=asset_stats["ticker"].values,
+                hovertemplate=(
+                    "<b>%{text}</b><br>"
+                    "Volatility: %{x:.1f}%<br>"
+                    "Return: %{y:.1f}%<br>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    # Efficient frontier curve
+    if len(frontier_vols) > 0:
+        fig.add_trace(
+            go.Scatter(
+                x=frontier_vols * 100,
+                y=frontier_rets * 100,
+                mode="lines",
+                name="Efficient Frontier",
+                line=dict(color=COLOR_FRONTIER, width=3),
+                hovertemplate=(
+                    "Volatility: %{x:.1f}%<br>"
+                    "Return: %{y:.1f}%<br>"
+                    "<extra>Efficient Frontier</extra>"
+                ),
+            )
+        )
+
+    # Current portfolio position
+    if result is not None:
+        strat_m = compute_metrics(result.equity)
+        fig.add_trace(
+            go.Scatter(
+                x=[strat_m["annualized_vol"] * 100],
+                y=[strat_m["cagr"] * 100],
+                mode="markers+text",
+                name="Portfolio",
+                marker=dict(
+                    size=16, color=COLOR_PORTFOLIO, symbol="star",
+                    line=dict(width=2, color="#fff"),
+                ),
+                text=["Portfolio"],
+                textposition="top center",
+                textfont=dict(color=COLOR_PORTFOLIO, size=12),
+                hovertemplate=(
+                    "<b>KAMA Portfolio</b><br>"
+                    "Volatility: %{x:.1f}%<br>"
+                    "CAGR: %{y:.1f}%<br>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+        spy_m = compute_metrics(result.spy_equity)
+        fig.add_trace(
+            go.Scatter(
+                x=[spy_m["annualized_vol"] * 100],
+                y=[spy_m["cagr"] * 100],
+                mode="markers+text",
+                name="S&P 500",
+                marker=dict(
+                    size=14, color=COLOR_BENCHMARK, symbol="diamond",
+                    line=dict(width=2, color="#fff"),
+                ),
+                text=["SPY"],
+                textposition="top center",
+                textfont=dict(color=COLOR_BENCHMARK, size=11),
+                hovertemplate=(
+                    "<b>S&P 500</b><br>"
+                    "Volatility: %{x:.1f}%<br>"
+                    "CAGR: %{y:.1f}%<br>"
+                    "<extra></extra>"
+                ),
+            )
+        )
+
+    fig.update_layout(
+        **_base_layout(
+            title="Risk-Return Distribution & Efficient Frontier",
+            xaxis_title="Annualized Volatility (%)",
+            yaxis_title="Annualized Return (%)",
+            height=550,
+        )
+    )
+    return fig
+
+
 def _render_trade_log(result: SimulationResult):
     if not result.trade_log:
         st.info("No trades recorded.")
@@ -492,63 +717,143 @@ def _render_trade_log(result: SimulationResult):
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
+def _param_card(label: str, desc: str = "") -> None:
+    """Render a styled parameter card header."""
+    html = f'<div class="param-card"><div class="param-label">{label}</div>'
+    if desc:
+        html += f'<div class="param-desc">{desc}</div>'
+    html += "</div>"
+    st.markdown(html, unsafe_allow_html=True)
+
+
 def _render_sidebar() -> dict:
     with st.sidebar:
         st.title("KAMA Momentum")
 
+        # --- Universe selector ---
         st.markdown("---")
-        st.subheader("Data")
+        st.markdown('<div class="sidebar-section">Universe</div>',
+                    unsafe_allow_html=True)
+        universe_mode = st.radio(
+            "Asset Universe",
+            options=["ETF Cross-Asset", "S&P 500"],
+            index=0,
+            help="ETF: 10 cross-asset ETFs (all-weather). S&P 500: ~500 individual stocks.",
+            label_visibility="collapsed",
+        )
+        is_etf_mode = universe_mode == "ETF Cross-Asset"
+
         refresh = st.checkbox("Refresh data cache", value=False)
 
+        run_clicked = st.button(
+            "Run Backtest", type="primary", use_container_width=True,
+        )
+
+        # --- Strategy parameters ---
         st.markdown("---")
-        st.subheader("Strategy Parameters")
+        st.markdown('<div class="sidebar-section">Strategy Parameters</div>',
+                    unsafe_allow_html=True)
+
+        _param_card("Initial Capital", "Starting portfolio value")
         initial_capital = st.number_input(
             "Initial Capital ($)", min_value=1_000.0, max_value=10_000_000.0,
             value=float(INITIAL_CAPITAL), step=1_000.0,
+            label_visibility="collapsed",
         )
-        top_n = st.slider("Top N Stocks", min_value=3, max_value=50, value=TOP_N)
-        kama_period = st.slider("KAMA Period", min_value=5, max_value=50, value=KAMA_PERIOD)
+
+        _param_card("Top N Assets", "Number of positions to hold simultaneously")
+        top_n = st.slider(
+            "Top N Assets",
+            min_value=3, max_value=10 if is_etf_mode else 50,
+            value=min(TOP_N, 10) if is_etf_mode else TOP_N,
+            label_visibility="collapsed",
+        )
+
+        _param_card("KAMA Period", "Adaptive MA lookback (trading days)")
+        kama_period = st.slider(
+            "KAMA Period", min_value=5, max_value=50, value=KAMA_PERIOD,
+            label_visibility="collapsed",
+        )
+
+        _param_card("Lookback Period", "Momentum evaluation window (trading days)")
         lookback_period = st.slider(
-            "Lookback Period", min_value=20, max_value=252, value=LOOKBACK_PERIOD
+            "Lookback Period", min_value=20, max_value=252, value=LOOKBACK_PERIOD,
+            label_visibility="collapsed",
         )
+
+        _param_card("KAMA Buffer", "Hysteresis threshold for regime flips")
         kama_buffer = st.slider(
             "KAMA Buffer", min_value=0.0, max_value=0.05,
             value=float(KAMA_BUFFER), step=0.001, format="%.3f",
+            label_visibility="collapsed",
         )
-        use_risk_adjusted = st.checkbox(
+
+        use_risk_adjusted = st.toggle(
             "Risk-Adjusted Momentum",
-            value=False,
+            value=True if is_etf_mode else False,
             help="Rank by return/volatility instead of raw return. "
                  "Prefers smooth uptrends but may miss volatile winners.",
         )
 
+        # --- Diversification ---
         st.markdown("---")
-        st.subheader("Universe Filter")
-        sector_map = load_sector_map()
-        all_sectors = sorted(sector_map["Sector"].unique())
-        selected_sectors = st.multiselect(
-            "Sectors", all_sectors, default=all_sectors,
+        st.markdown('<div class="sidebar-section">Diversification</div>',
+                    unsafe_allow_html=True)
+        enable_correlation = st.toggle(
+            "Correlation Filter",
+            value=is_etf_mode,
+            help="Greedy diversification: skip assets too correlated with basket.",
         )
-
-        # Filter tickers by selected sectors
-        if selected_sectors:
-            available_tickers = sorted(
-                sector_map[sector_map["Sector"].isin(selected_sectors)]["Symbol"].tolist()
+        corr_threshold = CORRELATION_THRESHOLD
+        corr_lookback = CORRELATION_LOOKBACK
+        if enable_correlation:
+            _param_card("Max Correlation", "Threshold for pairwise correlation")
+            corr_threshold = st.slider(
+                "Max Correlation", min_value=0.3, max_value=0.95,
+                value=CORRELATION_THRESHOLD, step=0.05,
+                label_visibility="collapsed",
             )
-        else:
-            available_tickers = sorted(sector_map["Symbol"].tolist())
+            _param_card("Correlation Window", "Lookback in trading days")
+            corr_lookback = st.slider(
+                "Correlation Window (days)", min_value=20, max_value=120,
+                value=CORRELATION_LOOKBACK,
+                label_visibility="collapsed",
+            )
 
-        selected_tickers = st.multiselect(
-            "Tickers", available_tickers, default=available_tickers,
-            help="Select specific tickers or leave all selected.",
-        )
-
+        # --- Position sizing ---
         st.markdown("---")
-        run_clicked = st.button(
-            "Run Backtest", type="primary", width="stretch"
+        st.markdown('<div class="sidebar-section">Position Sizing</div>',
+                    unsafe_allow_html=True)
+        sizing_options = ["Equal Weight", "Risk Parity (Inverse Vol)"]
+        sizing_choice = st.radio(
+            "Sizing Method",
+            options=sizing_options,
+            index=1 if is_etf_mode else 0,
+            help="Risk Parity: allocate more to low-vol assets (bonds) and less to high-vol (equities).",
+            label_visibility="collapsed",
+        )
+        sizing_mode = "risk_parity" if sizing_choice == sizing_options[1] else "equal_weight"
+        vol_lookback = VOLATILITY_LOOKBACK
+        if sizing_mode == "risk_parity":
+            _param_card("Volatility Window", "Lookback for inverse-vol weighting")
+            vol_lookback = st.slider(
+                "Volatility Window (days)", min_value=10, max_value=60,
+                value=VOLATILITY_LOOKBACK,
+                label_visibility="collapsed",
+            )
+
+        # --- Regime filter ---
+        st.markdown("---")
+        enable_regime = st.toggle(
+            "SPY Regime Filter",
+            value=not is_etf_mode,
+            help="When enabled, liquidate all positions when SPY is below KAMA. "
+                 "Disable for cross-asset portfolios where bonds/gold hedge equity crashes.",
         )
 
     return {
+        "universe_mode": universe_mode,
+        "is_etf_mode": is_etf_mode,
         "refresh": refresh,
         "initial_capital": float(initial_capital),
         "top_n": top_n,
@@ -556,7 +861,12 @@ def _render_sidebar() -> dict:
         "lookback_period": lookback_period,
         "kama_buffer": kama_buffer,
         "use_risk_adjusted": use_risk_adjusted,
-        "selected_tickers": selected_tickers,
+        "enable_correlation": enable_correlation,
+        "corr_threshold": corr_threshold,
+        "corr_lookback": corr_lookback,
+        "sizing_mode": sizing_mode,
+        "vol_lookback": vol_lookback,
+        "enable_regime": enable_regime,
         "run_clicked": run_clicked,
     }
 
@@ -569,29 +879,43 @@ def main():
     sidebar = _render_sidebar()
 
     st.title("KAMA Momentum Strategy")
-    st.caption(
-        "Long/Cash only \u2022 Equal weight \u2022 S&P 500 universe \u2022 Daily KAMA review"
-    )
+
+    if sidebar["is_etf_mode"]:
+        st.caption(
+            "Long/Cash only \u2022 Cross-asset ETFs \u2022 "
+            + ("Risk Parity" if sidebar["sizing_mode"] == "risk_parity" else "Equal Weight")
+            + " \u2022 Daily KAMA review"
+        )
+    else:
+        st.caption(
+            "Long/Cash only \u2022 Equal weight \u2022 S&P 500 universe \u2022 Daily KAMA review"
+        )
 
     if sidebar["run_clicked"]:
-        sp500 = cached_fetch_sp500()
-
-        # Apply ticker filter
-        if sidebar["selected_tickers"]:
-            universe = [t for t in sp500 if t in sidebar["selected_tickers"]]
+        if sidebar["is_etf_mode"]:
+            universe = cached_fetch_etf()
+            cache_suffix = "_etf"
         else:
-            universe = sp500
+            universe = cached_fetch_sp500()
+            cache_suffix = ""
 
         close_prices, open_prices = cached_fetch_prices(
-            tuple(sorted(universe)), sidebar["refresh"]
+            tuple(sorted(universe)), sidebar["refresh"], cache_suffix=cache_suffix,
         )
 
         min_days = 756
-        valid = [
-            t
-            for t in close_prices.columns
-            if t != "SPY" and len(close_prices[t].dropna()) >= min_days
-        ]
+        if sidebar["is_etf_mode"]:
+            # In ETF mode, SPY is tradable — do not exclude it
+            valid = [
+                t for t in close_prices.columns
+                if len(close_prices[t].dropna()) >= min_days
+            ]
+        else:
+            valid = [
+                t
+                for t in close_prices.columns
+                if t != "SPY" and len(close_prices[t].dropna()) >= min_days
+            ]
 
         params = StrategyParams(
             kama_period=sidebar["kama_period"],
@@ -599,6 +923,12 @@ def main():
             top_n=sidebar["top_n"],
             kama_buffer=sidebar["kama_buffer"],
             use_risk_adjusted=sidebar["use_risk_adjusted"],
+            enable_regime_filter=sidebar["enable_regime"],
+            enable_correlation_filter=sidebar["enable_correlation"],
+            correlation_threshold=sidebar["corr_threshold"],
+            correlation_lookback=sidebar["corr_lookback"],
+            sizing_mode=sidebar["sizing_mode"],
+            volatility_lookback=sidebar["vol_lookback"],
         )
 
         with st.spinner(f"Running simulation on {len(valid)} tickers..."):
@@ -666,6 +996,15 @@ def main():
         plot_rolling_sharpe(result.equity, result.spy_equity),
         width="stretch",
     )
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+    # --- Section 6b: Risk-Return Scatter & Efficient Frontier ---
+    with st.spinner("Computing efficient frontier..."):
+        st.plotly_chart(
+            plot_risk_return_scatter(close_prices, result=result),
+            use_container_width=True,
+        )
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 

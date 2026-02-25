@@ -5,11 +5,14 @@ Signals computed on Close(T), execution on Open(T+1).
 Key design decisions that prevent capital destruction:
   - Market Breathing with hysteresis: SPY must cross KAMA by ±KAMA_BUFFER to
     flip regime, preventing sell-all/buy-all churn in sideways markets.
+    (Controlled by enable_regime_filter; disabled for cross-asset ETF mode.)
   - Lazy hold: positions are sold ONLY when their own KAMA stop-loss triggers,
     never because they dropped in the momentum ranking.
-  - Strict slot sizing: each position gets at most 1/TOP_N of equity,
-    preventing concentration risk when few buy signals appear.
+  - Position sizing: strict 1/TOP_N (equal weight) OR inverse-volatility
+    (risk parity), controlled by sizing_mode parameter.
 """
+
+from __future__ import annotations
 
 import numpy as np
 import pandas as pd
@@ -43,7 +46,7 @@ def run_simulation(
         close_prices: Full history of Close prices (DatetimeIndex rows,
                       ticker columns). Must include SPY.
         open_prices: Full history of Open prices (same shape/index).
-        tickers: list of tradable ticker symbols (excludes SPY).
+        tickers: list of tradable ticker symbols.
         initial_capital: starting cash.
         params: strategy parameters. Falls back to config defaults when *None*.
         kama_cache: pre-computed {ticker: kama_series}. Computed internally
@@ -58,7 +61,7 @@ def run_simulation(
     # ------------------------------------------------------------------
     if kama_cache is None:
         kama_cache = {}
-        all_tickers = list(set(tickers + [SPY_TICKER]))
+        all_tickers = list(set(tickers) | {SPY_TICKER})
         ticker_iter = tqdm(all_tickers, desc="Computing KAMA", unit="ticker") if show_progress else all_tickers
         for t in ticker_iter:
             if t in close_prices.columns:
@@ -86,11 +89,12 @@ def run_simulation(
     equity_values: list[float] = []
 
     pending_trades: dict[str, float] | None = None
+    pending_weights: dict[str, float] | None = None  # risk parity weights for pending buys
     is_bull = True  # regime memory — persists across days (hysteresis)
 
     # Tracking for dashboard
     cash_values: list[float] = []
-    regime_values: list[bool] = []
+    regime_values: list[bool] = [] if p.enable_regime_filter else None
     holdings_rows: list[dict[str, float]] = []
     trade_log: list[dict] = []
 
@@ -111,7 +115,10 @@ def run_simulation(
                 equity_at_open = max(cash, 1.0)
 
             shares_before = set(shares.keys())
-            cash = _execute_trades(shares, pending_trades, equity_at_open, daily_open, p.top_n)
+            cash = _execute_trades(
+                shares, pending_trades, equity_at_open, daily_open,
+                p.top_n, weights=pending_weights,
+            )
 
             # Record trades
             for t in shares_before - set(shares.keys()):
@@ -125,6 +132,7 @@ def run_simulation(
                     "shares": shares[t], "price": daily_open.get(t, 0.0),
                 })
             pending_trades = None
+            pending_weights = None
 
         # --- Mark-to-market on Close ---
         equity_value = cash + sum(
@@ -134,37 +142,38 @@ def run_simulation(
 
         # Record daily snapshot
         cash_values.append(cash)
-        regime_values.append(is_bull)
+        if regime_values is not None:
+            regime_values.append(is_bull)
         holdings_rows.append({t: shares.get(t, 0.0) for t in tickers})
 
         if equity_value <= 0:
             remaining = len(sim_dates) - i - 1
             equity_values.extend([0.0] * remaining)
             cash_values.extend([0.0] * remaining)
-            regime_values.extend([False] * remaining)
+            if regime_values is not None:
+                regime_values.extend([False] * remaining)
             empty_row = {t: 0.0 for t in tickers}
             holdings_rows.extend([empty_row] * remaining)
             break
 
         # --- Compute signals on Close(T) for Open(T+1) ---
 
-        # FIX #2: Market Breathing with hysteresis buffer.
-        # Regime flips only when SPY crosses KAMA by ±KAMA_BUFFER,
-        # preventing daily whipsaws in sideways markets.
-        spy_close = daily_close.get(SPY_TICKER, np.nan)
-        spy_kama_s = kama_cache.get(SPY_TICKER, pd.Series(dtype=float))
-        spy_kama = spy_kama_s.get(date, np.nan) if date in spy_kama_s.index else np.nan
+        # Market Breathing with hysteresis buffer (optional regime filter).
+        if p.enable_regime_filter:
+            spy_close = daily_close.get(SPY_TICKER, np.nan)
+            spy_kama_s = kama_cache.get(SPY_TICKER, pd.Series(dtype=float))
+            spy_kama = spy_kama_s.get(date, np.nan) if date in spy_kama_s.index else np.nan
 
-        if not np.isnan(spy_close) and not np.isnan(spy_kama):
-            if is_bull and spy_close < spy_kama * (1 - p.kama_buffer):
-                is_bull = False
-            elif not is_bull and spy_close > spy_kama * (1 + p.kama_buffer):
-                is_bull = True
+            if not np.isnan(spy_close) and not np.isnan(spy_kama):
+                if is_bull and spy_close < spy_kama * (1 - p.kama_buffer):
+                    is_bull = False
+                elif not is_bull and spy_close > spy_kama * (1 + p.kama_buffer):
+                    is_bull = True
 
-        if not is_bull:
-            if shares:
-                pending_trades = {}
-            continue
+            if not is_bull:
+                if shares:
+                    pending_trades = {}
+                continue
 
         # FIX #1: Sell ONLY on individual KAMA stop-loss.
         # A stock dropping from rank 20 to rank 50 is irrelevant
@@ -197,6 +206,9 @@ def run_simulation(
             past_prices, tickers, kama_current,
             kama_buffer=p.kama_buffer, top_n=p.top_n,
             use_risk_adjusted=p.use_risk_adjusted,
+            correlation_threshold=p.correlation_threshold,
+            correlation_lookback=p.correlation_lookback,
+            enable_correlation_filter=p.enable_correlation_filter,
         )
 
         # Build trade instructions
@@ -220,6 +232,16 @@ def run_simulation(
         if new_trades:
             pending_trades = new_trades
 
+            # Compute risk parity weights for new buys
+            if p.sizing_mode == "risk_parity":
+                buys_list = [t for t, v in new_trades.items() if v == 1.0]
+                if buys_list:
+                    vol_start = max(0, idx_in_full - p.volatility_lookback)
+                    vol_prices = close_prices.iloc[vol_start : idx_in_full + 1]
+                    pending_weights = _compute_inverse_vol_weights(
+                        buys_list, vol_prices, p.volatility_lookback,
+                    )
+
     n = len(equity_values)
     idx = sim_dates[:n]
     equity_series = pd.Series(equity_values, index=idx)
@@ -227,7 +249,11 @@ def run_simulation(
 
     holdings_df = pd.DataFrame(holdings_rows, index=idx)
     cash_series = pd.Series(cash_values, index=idx)
-    regime_series = pd.Series(regime_values, index=idx, dtype=bool)
+    regime_series = (
+        pd.Series(regime_values, index=idx, dtype=bool)
+        if regime_values is not None
+        else None
+    )
 
     return SimulationResult(
         equity=equity_series,
@@ -239,19 +265,61 @@ def run_simulation(
     )
 
 
+def _compute_inverse_vol_weights(
+    tickers_to_buy: list[str],
+    close_prices_window: pd.DataFrame,
+    volatility_lookback: int = 20,
+) -> dict[str, float]:
+    """Compute inverse-volatility weights for a set of tickers.
+
+    Each ticker's weight is proportional to 1/volatility, so low-vol assets
+    (e.g. bonds) get larger allocations and high-vol assets (e.g. EM equities)
+    get smaller allocations. This ensures each position contributes roughly
+    equal dollar risk to the portfolio.
+
+    Falls back to equal weight if volatility cannot be computed.
+    """
+    if not tickers_to_buy:
+        return {}
+
+    inv_vols: dict[str, float] = {}
+    for t in tickers_to_buy:
+        if t not in close_prices_window.columns:
+            continue
+        recent = close_prices_window[t].iloc[-volatility_lookback:]
+        returns = recent.pct_change().dropna()
+        if len(returns) < 5:
+            continue
+        vol = returns.std()
+        if vol > 1e-8:
+            inv_vols[t] = 1.0 / vol
+        else:
+            inv_vols[t] = 1.0  # near-zero vol: treat as equal weight
+
+    if not inv_vols:
+        return {t: 1.0 / len(tickers_to_buy) for t in tickers_to_buy}
+
+    total = sum(inv_vols.values())
+    return {t: v / total for t, v in inv_vols.items()}
+
+
 def _execute_trades(
     shares: dict[str, float],
     trades: dict[str, float],
     equity_at_open: float,
     open_prices: pd.Series,
     top_n: int = StrategyParams().top_n,
+    weights: dict[str, float] | None = None,
 ) -> float:
     """Execute trades. Mutates ``shares`` in place. Returns remaining cash.
 
     Convention:
       - trades == {} (empty dict): sell everything (bear regime).
       - trades[t] == 0.0: sell position t.
-      - trades[t] == 1.0: buy position t with strict 1/top_n allocation.
+      - trades[t] == 1.0: buy position t.
+
+    When *weights* is provided (risk parity mode), each buy's allocation is
+    equity_at_open * weights[t]. Otherwise strict 1/top_n equal weight.
     """
     total_cost = 0.0
 
@@ -277,15 +345,16 @@ def _execute_trades(
     held_value = sum(shares[t] * open_prices.get(t, 0.0) for t in shares)
     available = equity_at_open - held_value - total_cost
 
-    # FIX #3: Strict slot sizing — at most 1/TOP_N of total equity per position.
-    # If only 1 buy signal appears after 10 stops, it still gets only 5%,
-    # not the entire 50% of freed cash.
+    # Position sizing: risk parity (inverse vol) or equal weight (1/TOP_N).
     buys = [t for t, action in trades.items() if action == 1.0 and t not in shares]
     if buys and available > 0:
-        max_per_slot = equity_at_open / top_n
         for t in buys:
             price = open_prices.get(t, 0.0)
-            allocation = min(max_per_slot, available)
+            if weights is not None and t in weights:
+                max_allocation = equity_at_open * weights[t]
+            else:
+                max_allocation = equity_at_open / top_n
+            allocation = min(max_allocation, available)
             if price > 0 and allocation > 0:
                 net_investment = allocation / (1 + COST_RATE)
                 cost = net_investment * COST_RATE

@@ -1,9 +1,13 @@
-"""Data loading: S&P 500 tickers from Wikipedia, price fetching via yfinance, Parquet cache.
+"""Data loading: tickers + price fetching via yfinance, Parquet cache.
+
+Supports two universes:
+  - S&P 500 (from Wikipedia / local CSV)
+  - Cross-asset ETFs (hardcoded in config.py)
 
 Cache behavior:
-  - If close_prices.parquet and open_prices.parquet exist in output/cache/,
-    data is loaded from disk and yfinance is NOT called. No network requests.
-  - Use refresh=True to force re-download and overwrite the cache.
+  - If close_prices{suffix}.parquet and open_prices{suffix}.parquet exist in
+    output/cache/, data is loaded from disk and yfinance is NOT called.
+  - Use refresh=True to force re-download and overwrite cache.
 """
 
 import pandas as pd
@@ -12,7 +16,7 @@ import yfinance as yf
 from pathlib import Path
 from tqdm import tqdm
 
-from src.portfolio_sim.config import CACHE_DIR, SPY_TICKER
+from src.portfolio_sim.config import CACHE_DIR, ETF_UNIVERSE, SPY_TICKER
 
 log = structlog.get_logger(__name__)
 
@@ -42,24 +46,44 @@ def fetch_sp500_tickers() -> list[str]:
     return sorted(tickers)
 
 
+def fetch_etf_tickers() -> list[str]:
+    """Return the hardcoded cross-asset ETF universe from config.
+
+    No network call or CSV read needed. SPY is included as both
+    a tradable asset and benchmark.
+    """
+    log.info("Using cross-asset ETF universe", n_tickers=len(ETF_UNIVERSE))
+    return sorted(ETF_UNIVERSE)
+
+
 def fetch_price_data(
     tickers: list[str],
     period: str = "5y",
     refresh: bool = False,
+    cache_suffix: str = "",
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Fetch Close and Open prices for all tickers.
 
     Returns (close_prices, open_prices) DataFrames with DatetimeIndex rows
     and ticker columns.
 
-    Cache: if output/cache/ contains close_prices.parquet and open_prices.parquet,
-    loads from disk and does not download. Pass refresh=True to force re-download
-    and overwrite cache.
+    Args:
+        tickers: list of ticker symbols to download.
+        period: yfinance period string (default: "5y").
+        refresh: force re-download and overwrite cache.
+        cache_suffix: appended to cache filenames to separate ETF vs S&P 500
+                      caches (e.g. "_etf").
+
+    Cache: if output/cache/ contains the parquet files, loads from disk and
+    does not download. Pass refresh=True to force re-download.
     """
-    if CLOSE_CACHE.exists() and OPEN_CACHE.exists() and not refresh:
-        log.info("Loading prices from Parquet cache (skip download)")
-        close_df = pd.read_parquet(CLOSE_CACHE)
-        open_df = pd.read_parquet(OPEN_CACHE)
+    close_cache = CACHE_DIR / f"close_prices{cache_suffix}.parquet"
+    open_cache = CACHE_DIR / f"open_prices{cache_suffix}.parquet"
+
+    if close_cache.exists() and open_cache.exists() and not refresh:
+        log.info("Loading prices from Parquet cache (skip download)", suffix=cache_suffix)
+        close_df = pd.read_parquet(close_cache)
+        open_df = pd.read_parquet(open_cache)
         return close_df, open_df
 
     full_list = list(set(tickers + [SPY_TICKER]))
@@ -68,8 +92,8 @@ def fetch_price_data(
     close_df, open_df = _download_from_yfinance(full_list, period)
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    close_df.to_parquet(CLOSE_CACHE)
-    open_df.to_parquet(OPEN_CACHE)
+    close_df.to_parquet(close_cache)
+    open_df.to_parquet(open_cache)
     log.info("Prices cached to Parquet — future runs will use cache", path=str(CACHE_DIR))
 
     return close_df, open_df
