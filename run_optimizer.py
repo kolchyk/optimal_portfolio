@@ -16,7 +16,7 @@ import pandas as pd
 import structlog
 
 from src.portfolio_sim.config import INITIAL_CAPITAL
-from src.portfolio_sim.data import fetch_price_data, fetch_sp500_tickers
+from src.portfolio_sim.data import fetch_price_data, fetch_etf_tickers
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.optimizer import (
     format_sensitivity_report,
@@ -69,20 +69,20 @@ def main():
     output_dir.mkdir(parents=True, exist_ok=True)
 
     # Fetch data
-    print("\nFetching S&P 500 constituents...")
-    sp500_tickers = fetch_sp500_tickers()
-    print(f"S&P 500: {len(sp500_tickers)} tickers")
+    print("\nUsing cross-asset ETF universe...")
+    tickers = fetch_etf_tickers()
+    print(f"Universe: {len(tickers)} tickers")
 
     print(f"Downloading price data ({args.period})...")
     close_prices, open_prices = fetch_price_data(
-        sp500_tickers, period=args.period, refresh=args.refresh
+        tickers, period=args.period, refresh=args.refresh, cache_suffix="_etf"
     )
 
     # Filter tickers with sufficient history
     min_days = 756
     valid_tickers = [
         t for t in close_prices.columns
-        if t != "SPY" and len(close_prices[t].dropna()) >= min_days
+        if len(close_prices[t].dropna()) >= min_days
     ]
     print(f"Tradable tickers with {min_days}+ days: {len(valid_tickers)}")
 
@@ -129,9 +129,7 @@ def main():
     save_equity_png(sim_result.equity, sim_result.spy_equity, output_dir)
 
     # Asset report
-    meta_path = Path("sp500_companies.csv")
-    asset_meta = pd.read_csv(meta_path) if meta_path.exists() else None
-    asset_report = format_asset_report(sim_result, close_prices, asset_meta)
+    asset_report = format_asset_report(sim_result, close_prices, asset_meta=None)
     asset_report_path = output_dir / "asset_report.txt"
     asset_report_path.write_text(asset_report)
     print(f"Asset report saved to {asset_report_path}")

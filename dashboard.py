@@ -22,7 +22,7 @@ from src.portfolio_sim.config import (
     TOP_N,
     VOLATILITY_LOOKBACK,
 )
-from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data, fetch_sp500_tickers
+from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.models import SimulationResult
 from src.portfolio_sim.params import StrategyParams
@@ -163,11 +163,6 @@ _setup_logging()
 # ---------------------------------------------------------------------------
 # Cached data helpers
 # ---------------------------------------------------------------------------
-@st.cache_data(show_spinner="Fetching S&P 500 tickers...")
-def cached_fetch_sp500():
-    return fetch_sp500_tickers()
-
-
 @st.cache_data(show_spinner="Fetching ETF tickers...")
 def cached_fetch_etf():
     return fetch_etf_tickers()
@@ -768,12 +763,13 @@ def _render_sidebar() -> dict:
     with st.sidebar:
         st.title("KAMA Momentum")
 
-        # --- Universe selector ---
-        st.markdown("---")
-        st.markdown('<div class="sidebar-section">Universe</div>',
-                    unsafe_allow_html=True)
         is_etf_mode = True
         universe_mode = "ETF Cross-Asset"
+
+        # --- Settings ---
+        st.markdown("---")
+        st.markdown('<div class="sidebar-section">Settings</div>',
+                    unsafe_allow_html=True)
 
         _param_card("Data Period", "Years of historical data to fetch")
         data_years = st.slider(
@@ -943,9 +939,9 @@ def main():
     st.title("KAMA Momentum Strategy")
 
     st.caption(
-        "Long/Cash only \u2022 Cross-asset ETFs \u2022 "
+        "Long/Cash only • Cross-asset ETFs • "
         + ("Risk Parity" if sidebar["sizing_mode"] == "risk_parity" else "Equal Weight")
-        + " \u2022 Daily KAMA review"
+        + " • Daily KAMA review"
     )
 
     if sidebar["run_clicked"]:

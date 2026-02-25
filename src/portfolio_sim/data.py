@@ -24,28 +24,6 @@ CLOSE_CACHE = CACHE_DIR / "close_prices.parquet"
 OPEN_CACHE = CACHE_DIR / "open_prices.parquet"
 
 
-def fetch_sp500_tickers() -> list[str]:
-    """Fetch current S&P 500 constituent tickers from local CSV or fallback URL.
-
-    Returns sorted list of ticker symbols. Dots in symbols (e.g. BRK.B)
-    are replaced with hyphens for yfinance compatibility.
-    """
-    csv_path = Path("sp500_companies.csv")
-    if csv_path.exists():
-        log.info("Loading tickers from sp500_companies.csv")
-        df = pd.read_csv(csv_path)
-        tickers = df["Symbol"].str.replace(".", "-", regex=False).tolist()
-    else:
-        log.info("Fetching S&P 500 constituents from fallback URL")
-        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
-        tables = pd.read_html(url)
-        df = tables[0]
-        tickers = df["Symbol"].str.replace(".", "-", regex=False).tolist()
-
-    log.info("Fetched S&P 500 constituents", n_tickers=len(tickers))
-    return sorted(tickers)
-
-
 def fetch_etf_tickers() -> list[str]:
     """Return the hardcoded cross-asset ETF universe from config.
 

@@ -16,7 +16,7 @@ from pathlib import Path
 import structlog
 
 from src.portfolio_sim.config import INITIAL_CAPITAL
-from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data, fetch_sp500_tickers
+from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import (
@@ -29,10 +29,6 @@ from src.portfolio_sim.reporting import (
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="KAMA Momentum Strategy -- portfolio backtest"
-    )
-    parser.add_argument(
-        "--universe", choices=["sp500", "etf"], default="sp500",
-        help="Asset universe: sp500 (~500 stocks) or etf (10 cross-asset ETFs)",
     )
     parser.add_argument(
         "--refresh", action="store_true",
@@ -68,16 +64,11 @@ def main():
     output_dir = Path("output") / f"sim_{dt}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    is_etf = args.universe == "etf"
-    cache_suffix = "_etf" if is_etf else ""
+    cache_suffix = "_etf"
 
     # Fetch tickers
-    if is_etf:
-        print("\nUsing cross-asset ETF universe...")
-        tickers = fetch_etf_tickers()
-    else:
-        print("\nFetching S&P 500 constituents...")
-        tickers = fetch_sp500_tickers()
+    print("\nUsing cross-asset ETF universe...")
+    tickers = fetch_etf_tickers()
     print(f"Universe: {len(tickers)} tickers")
 
     if args.cache_only:
@@ -96,29 +87,20 @@ def main():
         return
 
     # Build params for the selected universe
-    if is_etf:
-        params = StrategyParams(
-            use_risk_adjusted=True,
-            enable_regime_filter=False,
-            enable_correlation_filter=True,
-            sizing_mode="risk_parity",
-        )
-    else:
-        params = StrategyParams()
+    params = StrategyParams(
+        use_risk_adjusted=True,
+        enable_regime_filter=False,
+        enable_correlation_filter=True,
+        sizing_mode="risk_parity",
+    )
 
     # Filter tickers with sufficient history
     min_days = params.warmup * 2
-    if is_etf:
-        # In ETF mode, SPY is tradable — do not exclude it
-        valid_tickers = [
-            t for t in close_prices.columns
-            if len(close_prices[t].dropna()) >= min_days
-        ]
-    else:
-        valid_tickers = [
-            t for t in close_prices.columns
-            if t != "SPY" and len(close_prices[t].dropna()) >= min_days
-        ]
+    # In ETF mode, SPY is tradable — do not exclude it
+    valid_tickers = [
+        t for t in close_prices.columns
+        if len(close_prices[t].dropna()) >= min_days
+    ]
     print(f"Tradable tickers with {min_days}+ days: {len(valid_tickers)}")
 
     # Run simulation

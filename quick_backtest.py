@@ -14,7 +14,7 @@ from src.portfolio_sim.config import (
     LOOKBACK_PERIOD,
     TOP_N,
 )
-from src.portfolio_sim.data import fetch_price_data, fetch_sp500_tickers
+from src.portfolio_sim.data import fetch_price_data, fetch_etf_tickers
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics
@@ -30,10 +30,15 @@ def run_quick_backtest(
 ) -> dict:
     """Run backtest and return metrics for strategy and SPY over last 3 years."""
     # Load cached data
-    close = pd.read_parquet("output/cache/close_prices.parquet")
-    opn = pd.read_parquet("output/cache/open_prices.parquet")
+    try:
+        close = pd.read_parquet("output/cache/close_prices_etf.parquet")
+        opn = pd.read_parquet("output/cache/open_prices_etf.parquet")
+    except FileNotFoundError:
+        # Fallback if no etf cache yet
+        tickers = fetch_etf_tickers()
+        close, opn = fetch_price_data(tickers, period="5y", cache_suffix="_etf")
 
-    tickers = [t for t in close.columns if t != "SPY"]
+    tickers = [t for t in close.columns]
     min_days = 756
     valid = [t for t in tickers if len(close[t].dropna()) >= min_days]
 

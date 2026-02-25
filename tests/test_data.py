@@ -6,7 +6,6 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 from src.portfolio_sim.data import (
-    fetch_sp500_tickers,
     fetch_etf_tickers,
     fetch_price_data,
     _download_from_yfinance,
@@ -21,35 +20,6 @@ def test_fetch_etf_tickers():
     assert SPY_TICKER in tickers
     assert len(tickers) == len(ETF_UNIVERSE)
     assert tickers == sorted(ETF_UNIVERSE)
-
-
-@patch("src.portfolio_sim.data.pd.read_csv")
-@patch("src.portfolio_sim.data.Path.exists")
-def test_fetch_sp500_tickers_csv(mock_exists, mock_read_csv):
-    """Test fetching S&P 500 tickers from local CSV."""
-    mock_exists.return_value = True
-    mock_df = pd.DataFrame({"Symbol": ["AAPL", "BRK.B", "MSFT"]})
-    mock_read_csv.return_value = mock_df
-
-    tickers = fetch_sp500_tickers()
-    
-    # Dots should be replaced with hyphens
-    assert tickers == ["AAPL", "BRK-B", "MSFT"]
-    mock_read_csv.assert_called_once_with(Path("sp500_companies.csv"))
-
-
-@patch("src.portfolio_sim.data.pd.read_html")
-@patch("src.portfolio_sim.data.Path.exists")
-def test_fetch_sp500_tickers_fallback(mock_exists, mock_read_html):
-    """Test fetching S&P 500 tickers from Wikipedia fallback."""
-    mock_exists.return_value = False
-    mock_df = pd.DataFrame({"Symbol": ["TSLA", "BF.B"]})
-    mock_read_html.return_value = [mock_df]
-
-    tickers = fetch_sp500_tickers()
-    
-    assert tickers == ["BF-B", "TSLA"]
-    mock_read_html.assert_called_once()
 
 
 @patch("src.portfolio_sim.data._download_from_yfinance")

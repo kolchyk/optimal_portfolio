@@ -17,7 +17,7 @@ from pathlib import Path
 import structlog
 
 from src.portfolio_sim.config import INITIAL_CAPITAL
-from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data, fetch_sp500_tickers
+from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.max_profit import (
     format_max_profit_report,
@@ -30,10 +30,6 @@ from src.portfolio_sim.reporting import compute_metrics, format_comparison_table
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Maximum profit parameter search for KAMA momentum strategy"
-    )
-    parser.add_argument(
-        "--universe", choices=["sp500", "etf", "both"], default="both",
-        help="Which universe(s) to search (default: both)",
     )
     parser.add_argument(
         "--refresh", action="store_true",
@@ -97,9 +93,6 @@ def main():
     output_dir = Path("output") / f"max_profit_{dt}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    do_sp500 = args.universe in ("sp500", "both")
-    do_etf = args.universe in ("etf", "both")
-
     summary_lines: list[str] = []
     summary_lines.append("=" * 90)
     summary_lines.append("MAXIMUM PROFIT SEARCH — SUMMARY")
@@ -107,121 +100,73 @@ def main():
     summary_lines.append("=" * 90)
 
     # ------------------------------------------------------------------
-    # S&P 500
-    # ------------------------------------------------------------------
-    if do_sp500:
-        print("\nFetching S&P 500 constituents...")
-        sp500_tickers = fetch_sp500_tickers()
-        print(f"Universe: {len(sp500_tickers)} tickers")
-
-        print(f"Downloading price data ({args.period})...")
-        close_sp500, open_sp500 = fetch_price_data(
-            sp500_tickers, period=args.period, refresh=args.refresh,
-            cache_suffix="",
-        )
-
-        sp500_params = StrategyParams()
-        min_days = sp500_params.warmup * 2
-        valid_sp500 = [
-            t for t in close_sp500.columns
-            if t != "SPY" and len(close_sp500[t].dropna()) >= min_days
-        ]
-        print(f"Tradable tickers with {min_days}+ days: {len(valid_sp500)}")
-
-        # Part 1: Verification
-        run_verification(
-            close_sp500, open_sp500, valid_sp500, INITIAL_CAPITAL,
-            sp500_params, "S&P 500",
-        )
-
-        # Part 2: Optuna search
-        print(f"\n{'=' * 70}")
-        print(f"OPTUNA SEARCH — S&P 500 ({args.n_trials} trials)")
-        print(f"{'=' * 70}\n")
-
-        sp500_result = run_max_profit_search(
-            close_sp500, open_sp500, valid_sp500, INITIAL_CAPITAL,
-            universe="sp500",
-            default_params=sp500_params,
-            fixed_params={"enable_correlation_filter": False},
-            n_trials=args.n_trials,
-            n_workers=args.n_workers,
-            max_dd_limit=args.max_dd,
-        )
-
-        report_sp500 = format_max_profit_report(sp500_result)
-        print(f"\n{report_sp500}")
-
-        # Save
-        sp500_result.grid_results.to_csv(
-            output_dir / "grid_results_sp500.csv", index=False,
-        )
-        (output_dir / "report_sp500.txt").write_text(report_sp500)
-        summary_lines.append("")
-        summary_lines.append(report_sp500)
-
-    # ------------------------------------------------------------------
     # ETF
     # ------------------------------------------------------------------
-    if do_etf:
-        print("\nFetching ETF universe...")
-        etf_tickers = fetch_etf_tickers()
-        print(f"Universe: {len(etf_tickers)} tickers")
+    print("\nFetching ETF universe...")
+    etf_tickers = fetch_etf_tickers()
+    print(f"Universe: {len(etf_tickers)} tickers")
 
-        print(f"Downloading price data ({args.period})...")
-        close_etf, open_etf = fetch_price_data(
-            etf_tickers, period=args.period, refresh=args.refresh,
-            cache_suffix="_etf",
-        )
+    print(f"Downloading price data ({args.period})...")
+    close_etf, open_etf = fetch_price_data(
+        etf_tickers, period=args.period, refresh=args.refresh,
+        cache_suffix="_etf",
+    )
 
-        etf_params = StrategyParams(
-            use_risk_adjusted=True,
-            enable_regime_filter=False,
-            enable_correlation_filter=True,
-            sizing_mode="risk_parity",
-        )
-        min_days = etf_params.warmup * 2
-        valid_etf = [
-            t for t in close_etf.columns
-            if len(close_etf[t].dropna()) >= min_days
-        ]
-        print(f"Tradable tickers with {min_days}+ days: {len(valid_etf)}")
+    etf_params = StrategyParams(
+        use_risk_adjusted=True,
+        enable_regime_filter=False,
+        enable_correlation_filter=True,
+        sizing_mode="risk_parity",
+    )
+    min_days = etf_params.warmup * 2
+    valid_etf = [
+        t for t in close_etf.columns
+        if len(close_etf[t].dropna()) >= min_days
+    ]
+    print(f"Tradable tickers with {min_days}+ days: {len(valid_etf)}")
 
-        # Part 1: Verification
-        run_verification(
-            close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
-            etf_params, "Cross-Asset ETF",
-        )
+    # Part 1: Verification
+    run_verification(
+        close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
+        etf_params, "Cross-Asset ETF",
+    )
 
-        # Part 2: Optuna search
-        print(f"\n{'=' * 70}")
-        print(f"OPTUNA SEARCH — Cross-Asset ETF ({args.n_trials} trials)")
-        print(f"{'=' * 70}\n")
+    # Part 2: Optuna search
+    print(f"\n{'=' * 70}")
+    print(f"OPTUNA SEARCH — Cross-Asset ETF ({args.n_trials} trials)")
+    print(f"{'=' * 70}\n")
 
-        etf_result = run_max_profit_search(
-            close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
-            universe="etf",
-            default_params=etf_params,
-            fixed_params={
-                "enable_correlation_filter": True,
-                "correlation_threshold": 0.65,
-                "correlation_lookback": 60,
-            },
-            n_trials=args.n_trials,
-            n_workers=args.n_workers,
-            max_dd_limit=args.max_dd,
-        )
+    etf_result = run_max_profit_search(
+        close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
+        universe="etf",
+        default_params=etf_params,
+        fixed_params={
+            "enable_correlation_filter": True,
+            "correlation_threshold": 0.65,
+            "correlation_lookback": 60,
+        },
+        n_trials=args.n_trials,
+        n_workers=args.n_workers,
+        max_dd_limit=args.max_dd,
+    )
 
-        report_etf = format_max_profit_report(etf_result)
-        print(f"\n{report_etf}")
+    report_etf = format_max_profit_report(etf_result)
+    print(f"\n{report_etf}")
 
-        # Save
-        etf_result.grid_results.to_csv(
-            output_dir / "grid_results_etf.csv", index=False,
-        )
-        (output_dir / "report_etf.txt").write_text(report_etf)
-        summary_lines.append("")
-        summary_lines.append(report_etf)
+    # Save
+    etf_result.grid_results.to_csv(
+        output_dir / "grid_results_etf.csv", index=False,
+    )
+    (output_dir / "report_etf.txt").write_text(report_etf)
+    summary_lines.append("")
+    summary_lines.append(report_etf)
+
+    # ------------------------------------------------------------------
+    # Save combined summary
+    # ------------------------------------------------------------------
+    summary = "\n".join(summary_lines)
+    (output_dir / "summary.txt").write_text(summary)
+    print(f"\nAll results saved to {output_dir}")
 
     # ------------------------------------------------------------------
     # Save combined summary
