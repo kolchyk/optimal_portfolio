@@ -734,14 +734,8 @@ def _render_sidebar() -> dict:
         st.markdown("---")
         st.markdown('<div class="sidebar-section">Universe</div>',
                     unsafe_allow_html=True)
-        universe_mode = st.radio(
-            "Asset Universe",
-            options=["ETF Cross-Asset", "S&P 500"],
-            index=0,
-            help="ETF: 10 cross-asset ETFs (all-weather). S&P 500: ~500 individual stocks.",
-            label_visibility="collapsed",
-        )
-        is_etf_mode = universe_mode == "ETF Cross-Asset"
+        is_etf_mode = True
+        universe_mode = "ETF Cross-Asset"
 
         refresh = st.checkbox("Refresh data cache", value=False)
 
@@ -880,42 +874,26 @@ def main():
 
     st.title("KAMA Momentum Strategy")
 
-    if sidebar["is_etf_mode"]:
-        st.caption(
-            "Long/Cash only \u2022 Cross-asset ETFs \u2022 "
-            + ("Risk Parity" if sidebar["sizing_mode"] == "risk_parity" else "Equal Weight")
-            + " \u2022 Daily KAMA review"
-        )
-    else:
-        st.caption(
-            "Long/Cash only \u2022 Equal weight \u2022 S&P 500 universe \u2022 Daily KAMA review"
-        )
+    st.caption(
+        "Long/Cash only \u2022 Cross-asset ETFs \u2022 "
+        + ("Risk Parity" if sidebar["sizing_mode"] == "risk_parity" else "Equal Weight")
+        + " \u2022 Daily KAMA review"
+    )
 
     if sidebar["run_clicked"]:
-        if sidebar["is_etf_mode"]:
-            universe = cached_fetch_etf()
-            cache_suffix = "_etf"
-        else:
-            universe = cached_fetch_sp500()
-            cache_suffix = ""
+        universe = cached_fetch_etf()
+        cache_suffix = "_etf"
 
         close_prices, open_prices = cached_fetch_prices(
             tuple(sorted(universe)), sidebar["refresh"], cache_suffix=cache_suffix,
         )
 
         min_days = 756
-        if sidebar["is_etf_mode"]:
-            # In ETF mode, SPY is tradable — do not exclude it
-            valid = [
-                t for t in close_prices.columns
-                if len(close_prices[t].dropna()) >= min_days
-            ]
-        else:
-            valid = [
-                t
-                for t in close_prices.columns
-                if t != "SPY" and len(close_prices[t].dropna()) >= min_days
-            ]
+        # In ETF mode, SPY is tradable — do not exclude it
+        valid = [
+            t for t in close_prices.columns
+            if len(close_prices[t].dropna()) >= min_days
+        ]
 
         params = StrategyParams(
             kama_period=sidebar["kama_period"],
