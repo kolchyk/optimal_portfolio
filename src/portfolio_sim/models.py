@@ -51,9 +51,9 @@ class WFOResult:
 
 @dataclass
 class WFOGridEntry:
-    """One (min_is_days, oos_days) combination in schedule grid search."""
+    """One (lookback_period, oos_days) combination in schedule grid search."""
 
-    min_is_days: int
+    lookback_period: int
     oos_days: int
     wfo_result: WFOResult
     oos_calmar: float
@@ -61,8 +61,8 @@ class WFOGridEntry:
 
 @dataclass
 class WFOGridResult:
-    """Grid search over WFO schedule parameters."""
+    """Grid search over WFO schedule parameters (unified search space)."""
 
     entries: list[WFOGridEntry]
     best_entry: WFOGridEntry
-    summary: pd.DataFrame  # rows = combos, cols = min_is_days, oos_days, calmar, cagr, maxdd
+    summary: pd.DataFrame  # rows = combos, cols = lookback_period, oos_days, calmar, cagr, maxdd

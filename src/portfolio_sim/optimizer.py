@@ -61,6 +61,7 @@ def _clamp_to_space(value, spec: dict):
 # ---------------------------------------------------------------------------
 PARAM_NAMES: list[str] = [
     "kama_period", "lookback_period", "kama_buffer", "top_n",
+    "oos_days", "corr_threshold",
 ]
 
 
@@ -364,12 +365,10 @@ def run_sensitivity(
         executor.shutdown(wait=True)
 
     # Compute base params objective — match on all params present in grid
-    mask = (
-        (grid_df["kama_period"] == base_params.kama_period)
-        & (grid_df["lookback_period"] == base_params.lookback_period)
-        & (grid_df["kama_buffer"] == base_params.kama_buffer)
-        & (grid_df["top_n"] == base_params.top_n)
-    )
+    mask = pd.Series(True, index=grid_df.index)
+    for name in PARAM_NAMES:
+        if name in grid_df.columns:
+            mask = mask & (grid_df[name] == getattr(base_params, name))
     base_row = grid_df[mask]
     if not base_row.empty:
         base_objective = float(base_row.iloc[0]["objective"])
@@ -409,10 +408,12 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
     bp = result.base_params
     lines.append("")
     lines.append("Base Parameters:")
-    lines.append(f"  kama_period:     {bp.kama_period}")
-    lines.append(f"  lookback_period: {bp.lookback_period}")
-    lines.append(f"  kama_buffer:     {bp.kama_buffer}")
-    lines.append(f"  top_n:           {bp.top_n}")
+    lines.append(f"  kama_period:      {bp.kama_period}")
+    lines.append(f"  lookback_period:  {bp.lookback_period}")
+    lines.append(f"  kama_buffer:      {bp.kama_buffer}")
+    lines.append(f"  top_n:            {bp.top_n}")
+    lines.append(f"  oos_days:         {bp.oos_days}")
+    lines.append(f"  corr_threshold:   {bp.corr_threshold}")
     if not np.isnan(result.base_objective):
         lines.append(f"  base objective:  {result.base_objective:.4f}")
     else:
@@ -479,18 +480,31 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
 
     if not valid.empty:
         top = valid.nlargest(10, "objective")
+        has_oos = "oos_days" in top.columns
+        has_corr = "corr_threshold" in top.columns
         header = (
             f"  {'kama':>5} {'lbk':>5} {'buf':>7} {'top_n':>5} "
-            f"{'obj':>8} {'cagr':>7} {'maxdd':>7} {'sharpe':>7}"
         )
+        if has_oos:
+            header += f"{'oos':>4} "
+        if has_corr:
+            header += f"{'corr':>5} "
+        header += f"{'obj':>8} {'cagr':>7} {'maxdd':>7} {'sharpe':>7}"
         lines.append(header)
         for _, row in top.iterrows():
-            lines.append(
+            line = (
                 f"  {int(row['kama_period']):>5} {int(row['lookback_period']):>5} "
                 f"{row['kama_buffer']:>7.4f} {int(row['top_n']):>5} "
+            )
+            if has_oos:
+                line += f"{int(row['oos_days']):>4} "
+            if has_corr:
+                line += f"{row['corr_threshold']:>5.2f} "
+            line += (
                 f"{row['objective']:>8.4f} {row['cagr']:>7.2%} "
                 f"{row['max_drawdown']:>7.2%} {row['sharpe']:>7.2f}"
             )
+            lines.append(line)
 
     # Overall verdict
     lines.append("")

@@ -3,9 +3,11 @@
 from dataclasses import dataclass
 
 from src.portfolio_sim.config import (
+    CORR_THRESHOLD,
     KAMA_BUFFER,
     KAMA_PERIOD,
     LOOKBACK_PERIOD,
+    OOS_DAYS,
     TOP_N,
     VOLATILITY_LOOKBACK,
 )
@@ -23,7 +25,7 @@ class StrategyParams:
     lookback_period: int = LOOKBACK_PERIOD
     top_n: int = TOP_N
     kama_buffer: float = KAMA_BUFFER
-    use_risk_adjusted: bool = False
+    use_risk_adjusted: bool = True
 
     # Position sizing: "equal_weight" or "risk_parity"
     sizing_mode: str = "equal_weight"
@@ -33,7 +35,13 @@ class StrategyParams:
     max_weight: float = 1.0
 
     # Require KAMA trending up for entry (kama_now > kama_prev)
-    kama_slope_filter: bool = False
+    kama_slope_filter: bool = True
+
+    # WFO out-of-sample window (trading days)
+    oos_days: int = OOS_DAYS
+
+    # Max pairwise correlation with held positions (1.0 = no filter)
+    corr_threshold: float = CORR_THRESHOLD
 
     @property
     def warmup(self) -> int:

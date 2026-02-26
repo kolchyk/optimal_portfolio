@@ -39,6 +39,7 @@ log = structlog.get_logger()
 ALL_PARAM_NAMES: list[str] = [
     "kama_period", "lookback_period", "top_n", "kama_buffer",
     "use_risk_adjusted", "sizing_mode",
+    "oos_days", "corr_threshold",
 ]
 
 

@@ -225,6 +225,35 @@ def run_simulation(
             kama_slope_filter=p.kama_slope_filter,
         )
 
+        # --- Correlation filter: skip candidates too correlated with holdings ---
+        if p.corr_threshold < 1.0 and shares:
+            held_after_sells = [t for t in shares if t not in sells]
+            if held_after_sells:
+                # Use recent lookback_period rows for correlation
+                row_idx = warmup + i
+                corr_start = max(0, row_idx - p.lookback_period + 1)
+                recent_rets = returns_df.iloc[corr_start:row_idx + 1]
+
+                filtered: list[str] = []
+                for t in candidates:
+                    if t not in recent_rets.columns:
+                        filtered.append(t)
+                        continue
+                    skip = False
+                    for h in held_after_sells:
+                        if h not in recent_rets.columns:
+                            continue
+                        pair = recent_rets[[t, h]].dropna()
+                        if len(pair) < 5:
+                            continue
+                        corr_val = pair.corr().iloc[0, 1]
+                        if corr_val > p.corr_threshold:
+                            skip = True
+                            break
+                    if not skip:
+                        filtered.append(t)
+                candidates = filtered
+
         # Build trade instructions
         new_trades: dict[str, float] = {}
 

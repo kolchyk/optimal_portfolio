@@ -723,7 +723,6 @@ def _render_sidebar() -> dict:
             opt_n_trials = 50
             opt_max_dd = 0.60
             opt_oos_days = 126
-            opt_min_is_days = 378
 
             if optimize_mode != "None":
                 opt_n_trials = st.slider(
@@ -744,11 +743,7 @@ def _render_sidebar() -> dict:
                     value=126, step=21,
                     help="Окно проверки вне выборки на каждом шаге (~6 месяцев = 126).",
                 )
-                opt_min_is_days = st.slider(
-                    "Мин. IS окно (дни)", min_value=252, max_value=756,
-                    value=378, step=63,
-                    help="Минимальное окно обучения внутри выборки (~1.5 года = 378).",
-                )
+                st.caption(f"IS окно = lookback_period (настраивается ниже)")
 
         # --- Группа 2: Параметры стратегии ---
         with st.expander("⚙️ Параметры стратегии", expanded=True):
@@ -836,7 +831,6 @@ def _render_sidebar() -> dict:
         "opt_n_trials": opt_n_trials,
         "opt_max_dd": opt_max_dd,
         "opt_oos_days": opt_oos_days,
-        "opt_min_is_days": opt_min_is_days,
         "initial_capital": float(initial_capital),
         "top_n": top_n,
         "kama_period": kama_period,
@@ -1091,7 +1085,6 @@ def main():
                     close_prices, open_prices, valid,
                     sidebar["initial_capital"],
                     n_trials_per_step=n_trials,
-                    min_is_days=sidebar["opt_min_is_days"],
                     oos_days=sidebar["opt_oos_days"],
                 )
                 best = wfo_result.final_params

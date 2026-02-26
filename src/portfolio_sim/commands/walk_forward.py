@@ -14,7 +14,6 @@ from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import save_equity_png
 from src.portfolio_sim.walk_forward import (
-    build_adaptive_schedule_space,
     format_wfo_grid_report,
     format_wfo_report,
     run_walk_forward,
@@ -45,16 +44,12 @@ def register(subparsers) -> None:
         help="Number of Optuna trials per WFO step (default: 50)",
     )
     p.add_argument(
-        "--oos-days", type=int, default=20,
-        help="OOS window size in trading days (default: 20 ~ 1 month)",
-    )
-    p.add_argument(
-        "--min-is-days", type=int, default=60,
-        help="Minimum IS window size in trading days (default: 60 ~ 3 months)",
+        "--oos-days", type=int, default=None,
+        help="OOS window size in trading days (default: from StrategyParams)",
     )
     p.add_argument(
         "--optimize-schedule", action="store_true",
-        help="Grid search over (min_is_days, oos_days) to find best WFO schedule",
+        help="Grid search over (lookback_period, oos_days) to find best WFO schedule",
     )
 
 
@@ -66,7 +61,11 @@ def run(args) -> None:
     tickers = fetch_etf_tickers()
     print(f"Universe: {len(tickers)} tickers")
 
-    min_days = args.min_is_days
+    base_params = StrategyParams()
+    if args.oos_days is not None:
+        base_params = StrategyParams(oos_days=args.oos_days)
+
+    min_days = base_params.lookback_period
     print(f"Downloading price data ({args.period})...")
     close_prices, open_prices = fetch_price_data(
         tickers, period=args.period, refresh=args.refresh,
@@ -80,8 +79,6 @@ def run(args) -> None:
         print(f"\nERROR: No tickers with {min_days}+ trading days.")
         print("Try: python -m src.portfolio_sim walk-forward --refresh")
         sys.exit(1)
-
-    base_params = StrategyParams()
 
     if args.optimize_schedule:
         _run_grid_search(args, close_prices, open_prices, valid_tickers,
@@ -121,6 +118,8 @@ def _save_wfo_artifacts(
             "lookback_period": step.optimized_params.lookback_period,
             "kama_buffer": step.optimized_params.kama_buffer,
             "top_n": step.optimized_params.top_n,
+            "oos_days": step.optimized_params.oos_days,
+            "corr_threshold": step.optimized_params.corr_threshold,
             "is_cagr": step.is_metrics.get("cagr", 0),
             "is_maxdd": step.is_metrics.get("max_drawdown", 0),
             "oos_cagr": step.oos_metrics.get("cagr", 0),
@@ -136,15 +135,18 @@ def _save_wfo_artifacts(
     fp = result.final_params
     print(f"\nRecommended live parameters:")
     print(f"  kama_period={fp.kama_period}, lookback_period={fp.lookback_period}, "
-          f"kama_buffer={fp.kama_buffer}, top_n={fp.top_n}")
+          f"kama_buffer={fp.kama_buffer}, top_n={fp.top_n}, "
+          f"oos_days={fp.oos_days}, corr_threshold={fp.corr_threshold}")
 
 
 def _run_single_wfo(args, close_prices, open_prices, valid_tickers,
                     base_params, output_dir) -> None:
     """Run a single WFO with fixed schedule parameters."""
+    min_is = base_params.lookback_period
+    oos = base_params.oos_days
     print(f"\nStarting walk-forward optimization...")
-    print(f"  IS minimum: {args.min_is_days} days (~{args.min_is_days / 21:.0f} months)")
-    print(f"  OOS window: {args.oos_days} days (~{args.oos_days / 21:.0f} months)")
+    print(f"  IS minimum (= lookback_period): {min_is} days (~{min_is / 21:.0f} months)")
+    print(f"  OOS window: {oos} days (~{oos / 21:.0f} months)")
     print(f"  Trials per step: {args.n_trials}")
     print()
 
@@ -156,8 +158,6 @@ def _run_single_wfo(args, close_prices, open_prices, valid_tickers,
         base_params=base_params,
         n_trials_per_step=args.n_trials,
         n_workers=args.n_workers,
-        min_is_days=args.min_is_days,
-        oos_days=args.oos_days,
     )
 
     report = format_wfo_report(result)
@@ -172,15 +172,16 @@ def _run_single_wfo(args, close_prices, open_prices, valid_tickers,
 
 def _run_grid_search(args, close_prices, open_prices, valid_tickers,
                      base_params, output_dir) -> None:
-    """Run WFO grid search over (min_is_days, oos_days) combinations."""
+    """Run WFO grid search over (lookback_period, oos_days) combinations."""
+    from src.portfolio_sim.config import SENSITIVITY_SPACE
+
     total_days = len(close_prices)
-    schedule_space = build_adaptive_schedule_space(total_days)
-    is_spec = schedule_space["min_is_days"]
-    oos_spec = schedule_space["oos_days"]
+    lbk_spec = SENSITIVITY_SPACE["lookback_period"]
+    oos_spec = SENSITIVITY_SPACE["oos_days"]
 
     print(f"\nStarting WFO schedule grid search ({total_days} trading days)...")
-    print(f"  IS range:  {is_spec['low']}..{is_spec['high']} days, step {is_spec['step']}")
-    print(f"  OOS range: {oos_spec['low']}..{oos_spec['high']} days, step {oos_spec['step']}")
+    print(f"  Lookback (= IS): {lbk_spec['low']}..{lbk_spec['high']} days, step {lbk_spec['step']}")
+    print(f"  OOS range:       {oos_spec['low']}..{oos_spec['high']} days, step {oos_spec['step']}")
     print(f"  Trials per step: {args.n_trials}")
     print()
 
@@ -192,7 +193,6 @@ def _run_grid_search(args, close_prices, open_prices, valid_tickers,
         base_params=base_params,
         n_trials_per_step=args.n_trials,
         n_workers=args.n_workers,
-        schedule_space=schedule_space,
     )
 
     report = format_wfo_grid_report(grid_result)
