@@ -16,8 +16,8 @@ RISK_FREE_RATE: float = 0.04
 # ---------------------------------------------------------------------------
 # Strategy parameters — concentrated momentum (4x S&P 500 target)
 # ---------------------------------------------------------------------------
-KAMA_PERIOD: int = 10
-LOOKBACK_PERIOD: int = 140  # Центр надежного плато
+KAMA_PERIOD: int = 20
+LOOKBACK_PERIOD: int = 60  # Центр надежного плато
 TOP_N: int = 10
 KAMA_BUFFER: float = 0.024  # Отступили от пика 0.025 на широкое плечо
 
@@ -57,9 +57,8 @@ ETF_UNIVERSE: list[str] = [
     "TLT", "IEF", "SHY", "SGOV", "SHV", "LQD", "VCIT", "VTC", "HYG", "JNK",
     "USHY", "FBND", "FIGB", "JCPB", "EMB", "PCY", "BWX", "BSJO", "TLH", "IGIB",
 
-    # Commodities & Metals
-    "GLD", "SLV", "IAU", "SGOL", "SIVR", "PPLT", "USO", "BNO", "DBC", "GSG",
-    "PDBC", "DJP", "DBA", "UNG", "CORN", "WEAT", "SOYB", "JO", "JJI", "GCC",
+    # Metals (Pure ETFs)
+    "GLD", "SLV", "PPLT", "PALL", "CPER", "LIT", "JJU",
 
     # Real Estate & REITs
     "VNQ", "SCHH", "RWR", "USRT", "REZ", "FRI", "AREA", "RWO", "VNQI", "BBRE",
@@ -114,11 +113,8 @@ ASSET_CLASS_MAP: dict[str, str] = {
     "USHY": "Corporate Bonds", "FBND": "Corporate Bonds", "FIGB": "Corporate Bonds", "JCPB": "Corporate Bonds", "EMB": "Corporate Bonds",
     "PCY": "Corporate Bonds", "BWX": "Corporate Bonds", "BSJO": "Corporate Bonds", "TLH": "Long Bonds", "IGIB": "Corporate Bonds",
 
-    # Commodities
-    "GLD": "Commodities", "SLV": "Commodities", "IAU": "Commodities", "SGOL": "Commodities", "SIVR": "Commodities",
-    "PPLT": "Commodities", "USO": "Commodities", "BNO": "Commodities", "DBC": "Commodities", "GSG": "Commodities",
-    "PDBC": "Commodities", "DJP": "Commodities", "DBA": "Commodities", "UNG": "Commodities", "CORN": "Commodities",
-    "WEAT": "Commodities", "SOYB": "Commodities", "JO": "Commodities", "JJI": "Commodities", "GCC": "Commodities",
+    # Metals
+    "GLD": "Metals", "SLV": "Metals", "PPLT": "Metals", "PALL": "Metals", "CPER": "Metals", "LIT": "Metals", "JJU": "Metals",
 
     # Real Estate
     "VNQ": "Real Estate", "SCHH": "Real Estate", "RWR": "Real Estate", "USRT": "Real Estate", "REZ": "Real Estate",
