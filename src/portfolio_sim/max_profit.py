@@ -9,13 +9,12 @@ limit is relaxed to 60%.
 from __future__ import annotations
 
 import os
-from concurrent.futures import ProcessPoolExecutor, as_completed
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 
 import optuna
 import pandas as pd
 import structlog
-from tqdm import tqdm
 
 from src.portfolio_sim.config import (
     DEFAULT_MAX_PROFIT_TRIALS,
@@ -25,9 +24,10 @@ from src.portfolio_sim.config import (
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.optimizer import (
     _get_kama_periods_from_space,
+    make_objective,
     precompute_kama_caches,
 )
-from src.portfolio_sim.parallel import suggest_params
+from src.portfolio_sim.parallel import run_optuna_batch_loop, select_best_params
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics
 
@@ -58,26 +58,11 @@ class MaxProfitResult:
 def compute_cagr_objective(
     equity: pd.Series, max_dd_limit: float = 0.60,
 ) -> float:
-    """CAGR-maximizing objective with relaxed drawdown limit.
-
-    Returns raw CAGR, or -999.0 for degenerate/rejected curves.
-    """
-    metrics = compute_metrics(equity)
-    if metrics["n_days"] < 5:  # Relaxed from 60
-        return -999.0
-    if metrics["max_drawdown"] > max_dd_limit:
-        return -999.0
-    cagr = metrics["cagr"]
-    if cagr <= 0:
-        return -999.0
-    return cagr
+    """CAGR-maximizing objective with relaxed drawdown limit."""
+    return make_objective("cagr", max_dd_limit=max_dd_limit, min_n_days=5)(equity)
 
 
-# Max-profit param/metric keys for evaluate_combo
-_MP_PARAM_KEYS = [
-    "kama_period", "lookback_period", "top_n", "kama_buffer",
-    "use_risk_adjusted", "sizing_mode",
-]
+# Metric keys tracked per trial
 _MP_METRIC_KEYS = [
     "total_return", "cagr", "max_drawdown", "sharpe", "calmar",
     "annualized_vol", "win_rate",
@@ -102,6 +87,8 @@ def run_max_profit_search(
     n_trials: int = DEFAULT_MAX_PROFIT_TRIALS,
     n_workers: int | None = None,
     max_dd_limit: float = 0.60,
+    eval_start: str | None = None,
+    eval_end: str | None = None,
 ) -> MaxProfitResult:
     """Search parameter space for maximum CAGR using Optuna TPE.
 
@@ -135,7 +122,13 @@ def run_max_profit_search(
         close_prices, open_prices, tickers, initial_capital,
         params=default_params, kama_cache=default_kama,
     )
-    default_metrics = compute_metrics(default_result.equity)
+    
+    default_equity = default_result.equity
+    if eval_start:
+        default_equity = default_equity.loc[eval_start:]
+    if eval_end:
+        default_equity = default_equity.loc[:eval_end]
+    default_metrics = compute_metrics(default_equity)
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -146,7 +139,7 @@ def run_max_profit_search(
 
     # Import fresh references to avoid stale function objects after Streamlit
     # module reloads (prevents PicklingError with ProcessPoolExecutor).
-    from src.portfolio_sim.parallel import evaluate_combo, init_eval_worker
+    from src.portfolio_sim.parallel import init_eval_worker
 
     # Use ask/tell API with batch parallelism via ProcessPoolExecutor.
     executor = ProcessPoolExecutor(
@@ -155,47 +148,29 @@ def run_max_profit_search(
         initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
     )
 
-    pbar = tqdm(total=n_trials, desc=f"Optuna search ({universe})", unit="trial")
-    trials_done = 0
+    slice_spec = {
+        "eval_start": eval_start,
+        "eval_end": eval_end,
+        "tickers": tickers,
+    }
 
-    while trials_done < n_trials:
-        batch_size = min(n_workers, n_trials - trials_done)
-        trials = [study.ask() for _ in range(batch_size)]
-        params_list = [suggest_params(t, space, fixed_params) for t in trials]
+    grid_df = run_optuna_batch_loop(
+        study, executor,
+        space=space,
+        n_trials=n_trials,
+        n_workers=n_workers,
+        objective_fn=compute_cagr_objective,
+        max_dd_limit=max_dd_limit,
+        objective_key="objective_cagr",
+        param_keys=ALL_PARAM_NAMES,
+        metric_keys=_MP_METRIC_KEYS,
+        user_attr_keys=_MP_USER_ATTR_KEYS,
+        fixed_params=fixed_params,
+        slice_spec=slice_spec,
+        desc=f"Optuna search ({universe})",
+    )
 
-        futures = {
-            executor.submit(
-                evaluate_combo,
-                (p, max_dd_limit, compute_cagr_objective, "objective_cagr",
-                 _MP_PARAM_KEYS, _MP_METRIC_KEYS),
-            ): (t, p)
-            for t, p in zip(trials, params_list)
-        }
-        for future in as_completed(futures):
-            trial, _ = futures[future]
-            result_dict = future.result()
-            obj = result_dict["objective_cagr"]
-            value = obj if obj > -999.0 else float("-inf")
-            for key in _MP_USER_ATTR_KEYS:
-                trial.set_user_attr(key, result_dict.get(key, 0.0))
-            study.tell(trial, value)
-            pbar.update(1)
-            trials_done += 1
-
-    pbar.close()
     executor.shutdown(wait=True)
-
-    # Extract results into DataFrame
-    rows: list[dict] = []
-    for trial in study.trials:
-        if trial.state == optuna.trial.TrialState.COMPLETE:
-            row = dict(trial.params)
-            obj_val = trial.value
-            row["objective_cagr"] = obj_val if obj_val != float("-inf") else -999.0
-            row.update(trial.user_attrs)
-            rows.append(row)
-
-    grid_df = pd.DataFrame(rows)
 
     log.info(
         "max_profit_done",
@@ -312,18 +287,6 @@ def format_max_profit_report(
 
 def select_best_from_search(result: MaxProfitResult) -> StrategyParams | None:
     """Select the trial with the best CAGR from a single-objective search."""
-    grid = result.grid_results
-    if grid.empty:
+    if result.grid_results.empty:
         return None
-
-    valid = grid[grid["objective_cagr"] > -999.0]
-    if valid.empty:
-        return None
-
-    best = valid.loc[valid["objective_cagr"].idxmax()]
-
-    kwargs = {}
-    for key in _MP_PARAM_KEYS:
-        if key in best.index:
-            kwargs[key] = best[key]
-    return StrategyParams(**kwargs)
+    return select_best_params(result.grid_results, "objective_cagr", ALL_PARAM_NAMES)

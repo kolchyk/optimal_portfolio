@@ -32,6 +32,9 @@ class StrategyParams:
     # Max weight per position (1.0 = no cap)
     max_weight: float = 1.0
 
+    # Require KAMA trending up for entry (kama_now > kama_prev)
+    kama_slope_filter: bool = False
+
     @property
     def warmup(self) -> int:
         """Minimum bars needed before trading can start."""

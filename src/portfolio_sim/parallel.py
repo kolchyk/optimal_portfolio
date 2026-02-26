@@ -7,10 +7,12 @@ evaluation functions, and parameter suggestion logic.
 
 from __future__ import annotations
 
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Callable
 
 import optuna
 import pandas as pd
+from tqdm import tqdm
 
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.params import StrategyParams
@@ -73,9 +75,18 @@ def evaluate_combo(
         tickers = _shared["tickers"]
 
         if slice_spec is not None:
-            close = close.loc[slice_spec["is_start"]:slice_spec["is_end"]]
-            open_ = open_.loc[slice_spec["is_start"]:slice_spec["is_end"]]
-            tickers = slice_spec["tickers"]
+            # Slicing for simulation (must include warmup)
+            sim_start = slice_spec.get("sim_start")
+            sim_end = slice_spec.get("sim_end")
+            if sim_start:
+                close = close.loc[sim_start:]
+                open_ = open_.loc[sim_start:]
+            if sim_end:
+                close = close.loc[:sim_end]
+                open_ = open_.loc[:sim_end]
+            
+            # Use original tickers if not overridden
+            tickers = slice_spec.get("tickers", tickers)
 
         kama_cache = _shared["kama_caches"].get(params.kama_period)
         result = run_simulation(
@@ -83,6 +94,17 @@ def evaluate_combo(
             _shared["capital"], params=params, kama_cache=kama_cache,
         )
         equity = result.equity
+
+        # Slicing for evaluation (objective + metrics)
+        if slice_spec is not None:
+            eval_start = slice_spec.get("eval_start")
+            eval_end = slice_spec.get("eval_end")
+            if eval_start and not equity.empty:
+                # Use nearest available date if exact match not found
+                equity = equity.loc[eval_start:]
+            if eval_end and not equity.empty:
+                equity = equity.loc[:eval_end]
+
         if equity.empty:
             obj = -999.0
             metrics = {}
@@ -125,4 +147,136 @@ def suggest_params(
                 name, spec["low"], spec["high"], step=spec.get("step"),
             )
     kwargs.update(fixed_params)
+    return StrategyParams(**kwargs)
+
+
+def run_optuna_batch_loop(
+    study: optuna.Study,
+    executor: ProcessPoolExecutor,
+    *,
+    space: dict[str, dict],
+    n_trials: int,
+    n_workers: int,
+    objective_fn: Callable,
+    max_dd_limit: float,
+    objective_key: str,
+    param_keys: list[str],
+    metric_keys: list[str],
+    user_attr_keys: list[str] | None = None,
+    fixed_params: dict | None = None,
+    slice_spec: dict | None = None,
+    desc: str = "Optuna trials",
+) -> pd.DataFrame:
+    """Run batch-parallel Optuna ask/tell loop and return results DataFrame.
+
+    Parameters
+    ----------
+    study : optuna.Study
+        Pre-created Optuna study (direction, sampler, enqueued trials).
+    executor : ProcessPoolExecutor
+        Already-initialized pool with ``init_eval_worker``.
+    space : dict
+        Parameter search space for ``suggest_params``.
+    n_trials, n_workers : int
+        Total trials and batch parallelism.
+    objective_fn, max_dd_limit, objective_key : ...
+        Passed through to ``evaluate_combo``.
+    param_keys, metric_keys : list[str]
+        Which parameter/metric keys to record per trial.
+    user_attr_keys : list[str] | None
+        Keys to store as Optuna user attrs.  Defaults to *metric_keys*.
+    fixed_params : dict | None
+        Fixed overrides for ``suggest_params``.
+    slice_spec : dict | None
+        Optional date/ticker slicing spec for workers.
+    desc : str
+        Progress bar description.
+
+    Returns
+    -------
+    pd.DataFrame
+        One row per completed trial with param values, objective, and metrics.
+    """
+    if user_attr_keys is None:
+        user_attr_keys = metric_keys
+
+    pbar = tqdm(total=n_trials, desc=desc, unit="trial")
+    trials_done = 0
+
+    while trials_done < n_trials:
+        batch_size = min(n_workers, n_trials - trials_done)
+        trials = [study.ask() for _ in range(batch_size)]
+        params_list = [suggest_params(t, space, fixed_params) for t in trials]
+
+        combo = lambda p: (
+            p, max_dd_limit, objective_fn, objective_key,
+            param_keys, metric_keys,
+        )
+
+        futures = {
+            executor.submit(
+                evaluate_combo,
+                combo(p) if slice_spec is None else combo(p) + (slice_spec,),
+            ): (t, p)
+            for t, p in zip(trials, params_list)
+        }
+        for future in as_completed(futures):
+            trial, _ = futures[future]
+            result_dict = future.result()
+            obj = result_dict[objective_key]
+            value = obj if obj > -999.0 else float("-inf")
+            for key in user_attr_keys:
+                trial.set_user_attr(key, result_dict.get(key, 0.0))
+            study.tell(trial, value)
+            pbar.update(1)
+            trials_done += 1
+
+    pbar.close()
+
+    # Extract results into DataFrame
+    rows: list[dict] = []
+    for trial in study.trials:
+        if trial.state == optuna.trial.TrialState.COMPLETE:
+            row = dict(trial.params)
+            obj_val = trial.value
+            row[objective_key] = obj_val if obj_val != float("-inf") else -999.0
+            row.update(trial.user_attrs)
+            rows.append(row)
+
+    return pd.DataFrame(rows)
+
+
+def select_best_params(
+    grid_df: pd.DataFrame,
+    objective_col: str,
+    param_keys: list[str],
+) -> StrategyParams | None:
+    """Select the best parameter combo from an optimization grid.
+
+    Returns the ``StrategyParams`` for the row with the highest
+    *objective_col* value (excluding rejected trials with -999.0),
+    or ``None`` if no valid combo was found.
+
+    Values are cast to native Python types (int/float/str/bool) so that
+    downstream code (e.g. ``pd.rolling()``) receives proper types instead
+    of numpy scalars.
+    """
+    valid = grid_df[grid_df[objective_col] > -999.0]
+    if valid.empty:
+        return None
+    best = valid.loc[valid[objective_col].idxmax()]
+
+    # Map StrategyParams field names → expected types
+    _field_types = {f.name: f.type for f in StrategyParams.__dataclass_fields__.values()}
+
+    kwargs = {}
+    for key in param_keys:
+        if key in best.index:
+            val = best[key]
+            expected = _field_types.get(key)
+            if expected == "int" or expected is int:
+                val = int(val)
+            elif expected == "float" or expected is float:
+                val = float(val)
+            kwargs[key] = val
     return StrategyParams(**kwargs)

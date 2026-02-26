@@ -76,8 +76,13 @@ def run_simulation(
     _prices = close_prices[_ticker_cols]
 
     returns_df = _prices.pct_change()
-    scoring_vol_df = returns_df.rolling(p.lookback_period, min_periods=5).std()
     momentum_df = _prices / _prices.shift(p.lookback_period - 1) - 1.0
+
+    # Efficiency Ratio matrix: vectorized across all tickers at once
+    _price_change = (_prices - _prices.shift(p.lookback_period)).abs()
+    _daily_abs_diff = _prices.diff(1).abs()
+    _volatility = _daily_abs_diff.rolling(p.lookback_period, min_periods=1).sum()
+    er_df = (_price_change / _volatility).clip(0, 1).fillna(0)
 
     rp_vol_df = None
     if p.sizing_mode == "risk_parity":
@@ -192,6 +197,21 @@ def run_simulation(
                 if not np.isnan(val):
                     kama_current[t] = val
 
+        # Previous KAMA values for slope gate
+        kama_prev: dict[str, float] = {}
+        if p.kama_slope_filter and i > 0:
+            prev_date = sim_dates[i - 1]
+            for t in tickers:
+                if t in kama_cache:
+                    t_kama_s = kama_cache[t]
+                    val = (
+                        t_kama_s.get(prev_date, np.nan)
+                        if prev_date in t_kama_s.index
+                        else np.nan
+                    )
+                    if not np.isnan(val):
+                        kama_prev[t] = val
+
         # Single-row DataFrame for the KAMA filter (Close > KAMA check)
         prices_row = _prices.loc[[date]]
 
@@ -200,7 +220,9 @@ def run_simulation(
             kama_buffer=p.kama_buffer, top_n=p.top_n,
             use_risk_adjusted=p.use_risk_adjusted,
             precomputed_momentum=momentum_df.loc[date],
-            precomputed_vol=scoring_vol_df.loc[date],
+            precomputed_er=er_df.loc[date],
+            kama_prev_values=kama_prev if p.kama_slope_filter else None,
+            kama_slope_filter=p.kama_slope_filter,
         )
 
         # Build trade instructions

@@ -78,3 +78,43 @@ def compute_kama_series(prices: pd.Series, period: int = 20) -> pd.Series:
     """Convenience wrapper returning pd.Series with the same index as input."""
     kama_arr = compute_kama(prices.values, period=period)
     return pd.Series(kama_arr, index=prices.index)
+
+
+def compute_er(
+    data: np.ndarray | pd.Series,
+    period: int = 20,
+) -> np.ndarray:
+    """Compute Kaufman's Efficiency Ratio.
+
+    ER = abs(price_change over period) / sum(abs(daily changes) over period).
+    Ranges from 0 (choppy, mean-reverting) to 1 (perfectly smooth trend).
+
+    Returns np.ndarray of ER values (NaN-padded for the first ``period`` bars).
+    """
+    period = max(1, int(period))
+    data_array = np.asarray(data, dtype=float)
+    n = len(data_array)
+
+    if n <= period:
+        return np.full(n, np.nan, dtype=float)
+
+    result = np.full(n, np.nan, dtype=float)
+
+    price_change = np.abs(data_array[period:] - data_array[:-period])
+
+    abs_diff = np.abs(np.diff(data_array))
+    abs_diff_cumsum = np.concatenate(([0], np.cumsum(abs_diff)))
+    volatility = abs_diff_cumsum[period:] - abs_diff_cumsum[:-period]
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        er = np.where(volatility > 0, price_change / volatility, 0.0)
+    er = np.clip(er, 0, 1)
+
+    result[period:] = er
+    return result
+
+
+def compute_er_series(prices: pd.Series, period: int = 20) -> pd.Series:
+    """Convenience wrapper returning pd.Series with the same index as input."""
+    er_arr = compute_er(prices.values, period=period)
+    return pd.Series(er_arr, index=prices.index)

@@ -32,7 +32,8 @@ from src.portfolio_sim.config import (
 from src.portfolio_sim.indicators import compute_kama_series
 from src.portfolio_sim.parallel import (
     _shared,
-    suggest_params,
+    run_optuna_batch_loop,
+    select_best_params,
 )
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics
@@ -83,6 +84,30 @@ class SensitivityResult:
 # ---------------------------------------------------------------------------
 # Objective function
 # ---------------------------------------------------------------------------
+def make_objective(
+    metric: str = "total_return",
+    max_dd_limit: float = 0.30,
+    min_n_days: int = 60,
+):
+    """Factory that returns an objective function for Optuna trials.
+
+    The returned callable accepts an equity ``pd.Series`` and returns
+    the chosen *metric* value, or ``-999.0`` when the equity curve is
+    rejected (too short, excessive drawdown, or non-positive metric).
+    """
+    def _objective(equity: pd.Series) -> float:
+        metrics = compute_metrics(equity)
+        if metrics["n_days"] < min_n_days:
+            return -999.0
+        if metrics["max_drawdown"] > max_dd_limit:
+            return -999.0
+        value = metrics[metric]
+        if value <= 0:
+            return -999.0
+        return value
+    return _objective
+
+
 def compute_objective(
     equity: pd.Series,
     max_dd_limit: float = 0.30,
@@ -94,15 +119,7 @@ def compute_objective(
         Total return (e.g. 0.50 for +50%), or -999.0 when MaxDD
         exceeds *max_dd_limit* or the equity curve is degenerate.
     """
-    metrics = compute_metrics(equity)
-    if metrics["n_days"] < min_n_days:
-        return -999.0
-    if metrics["max_drawdown"] > max_dd_limit:
-        return -999.0
-    total_return = metrics["total_return"]
-    if total_return <= 0:
-        return -999.0
-    return total_return
+    return make_objective("total_return", max_dd_limit, min_n_days)(equity)
 
 
 # ---------------------------------------------------------------------------
@@ -166,10 +183,7 @@ def _get_kama_periods_from_space(space: dict[str, dict]) -> list[int]:
     ))
 
 
-# Sensitivity param/metric keys for evaluate_combo
-_SENS_PARAM_KEYS = [
-    "kama_period", "lookback_period", "kama_buffer", "top_n",
-]
+# Metric keys tracked per trial in sensitivity analysis
 _SENS_METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]
 
 
@@ -306,7 +320,7 @@ def run_sensitivity(
 
     # Import fresh references to avoid stale function objects after Streamlit
     # module reloads (prevents PicklingError with ProcessPoolExecutor).
-    from src.portfolio_sim.parallel import evaluate_combo, init_eval_worker
+    from src.portfolio_sim.parallel import init_eval_worker
 
     # Determine whether we own the executor (and must shut it down).
     own_executor = executor is None
@@ -332,52 +346,22 @@ def run_sensitivity(
 
     objective_fn = partial(compute_objective, min_n_days=min_n_days)
 
-    pbar = tqdm(total=n_trials, desc="Sensitivity trials", unit="trial")
-    trials_done = 0
+    grid_df = run_optuna_batch_loop(
+        study, executor,
+        space=space,
+        n_trials=n_trials,
+        n_workers=n_workers,
+        objective_fn=objective_fn,
+        max_dd_limit=max_dd_limit,
+        objective_key="objective",
+        param_keys=PARAM_NAMES,
+        metric_keys=_SENS_METRIC_KEYS,
+        slice_spec=slice_spec,
+        desc="Sensitivity trials",
+    )
 
-    while trials_done < n_trials:
-        batch_size = min(n_workers, n_trials - trials_done)
-        trials = [study.ask() for _ in range(batch_size)]
-        params_list = [suggest_params(t, space) for t in trials]
-
-        combo_base = lambda p: (
-            p, max_dd_limit, objective_fn, "objective",
-            _SENS_PARAM_KEYS, _SENS_METRIC_KEYS,
-        )
-
-        futures = {
-            executor.submit(
-                evaluate_combo,
-                combo_base(p) if slice_spec is None else combo_base(p) + (slice_spec,),
-            ): (t, p)
-            for t, p in zip(trials, params_list)
-        }
-        for future in as_completed(futures):
-            trial, _ = futures[future]
-            result_dict = future.result()
-            obj = result_dict["objective"]
-            value = obj if obj > -999.0 else float("-inf")
-            for key in _SENS_METRIC_KEYS:
-                trial.set_user_attr(key, result_dict.get(key, 0.0))
-            study.tell(trial, value)
-            pbar.update(1)
-            trials_done += 1
-
-    pbar.close()
     if own_executor:
         executor.shutdown(wait=True)
-
-    # Extract results into DataFrame
-    rows: list[dict] = []
-    for trial in study.trials:
-        if trial.state == optuna.trial.TrialState.COMPLETE:
-            row = dict(trial.params)
-            obj_val = trial.value
-            row["objective"] = obj_val if obj_val != float("-inf") else -999.0
-            row.update(trial.user_attrs)
-            rows.append(row)
-
-    grid_df = pd.DataFrame(rows)
 
     # Compute base params objective — match on all params present in grid
     mask = (
@@ -529,14 +513,4 @@ def find_best_params(result: SensitivityResult) -> StrategyParams | None:
     Returns StrategyParams for the combo with highest objective,
     or None if no valid combo was found.
     """
-    valid = result.grid_results[result.grid_results["objective"] > -999.0]
-    if valid.empty:
-        return None
-    best = valid.loc[valid["objective"].idxmax()]
-    kwargs: dict = {
-        "kama_period": int(best["kama_period"]),
-        "lookback_period": int(best["lookback_period"]),
-        "kama_buffer": float(best["kama_buffer"]),
-        "top_n": int(best["top_n"]),
-    }
-    return StrategyParams(**kwargs)
+    return select_best_params(result.grid_results, "objective", PARAM_NAMES)

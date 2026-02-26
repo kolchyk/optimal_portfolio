@@ -70,9 +70,13 @@ def test_max_positions_capped(simple_prices, simple_tickers, kama_low):
     assert len(result) <= TOP_N
 
 
-def test_ranked_descending_by_momentum(simple_prices, simple_tickers, kama_low):
-    """Candidates should be sorted with highest momentum first."""
-    result = get_buy_candidates(simple_prices, simple_tickers, kama_low)
+def test_ranked_descending_by_raw_momentum(
+    simple_prices, simple_tickers, kama_low,
+):
+    """When risk-adjusted is off, candidates sorted by raw momentum descending."""
+    result = get_buy_candidates(
+        simple_prices, simple_tickers, kama_low, use_risk_adjusted=False,
+    )
     if len(result) >= 2:
         for i in range(len(result) - 1):
             t_a, t_b = result[i], result[i + 1]
@@ -81,6 +85,116 @@ def test_ranked_descending_by_momentum(simple_prices, simple_tickers, kama_low):
             assert mom_a >= mom_b
 
 
+def test_ranked_descending_by_er_adjusted(
+    simple_prices, simple_tickers, kama_low,
+):
+    """When risk-adjusted is on, candidates sorted by return * ER² descending."""
+    result = get_buy_candidates(
+        simple_prices, simple_tickers, kama_low, use_risk_adjusted=True,
+    )
+    assert len(result) >= 2
+    # Compute ER-adjusted scores independently
+    scores = {}
+    for t in result:
+        series = simple_prices[t].dropna()
+        raw_ret = series.iloc[-1] / series.iloc[0] - 1.0
+        price_change = abs(series.iloc[-1] - series.iloc[0])
+        vol = series.diff().abs().iloc[1:].sum()
+        er = min(price_change / vol, 1.0) if vol > 1e-8 else 0.0
+        scores[t] = raw_ret * (er ** 2)
+    for i in range(len(result) - 1):
+        assert scores[result[i]] >= scores[result[i + 1]]
+
+
 def test_empty_tickers_returns_empty(simple_prices, kama_low):
     result = get_buy_candidates(simple_prices, [], kama_low)
     assert result == []
+
+
+def test_er_penalizes_choppy_action():
+    """A choppy ticker with same return should score lower than a smooth one."""
+    dates = pd.bdate_range("2023-01-02", periods=50)
+    # Smooth uptrend: monotonically increasing
+    smooth = pd.Series(np.linspace(100, 120, 50), index=dates)
+    # Choppy: same start/end but oscillates
+    choppy_base = np.linspace(100, 120, 50)
+    choppy = pd.Series(
+        choppy_base + 5 * np.sin(np.linspace(0, 20, 50)), index=dates,
+    )
+    # Force same endpoint
+    choppy.iloc[-1] = 120.0
+
+    prices = pd.DataFrame({"SMOOTH": smooth, "CHOPPY": choppy}, index=dates)
+    kama_low = {"SMOOTH": 0.0, "CHOPPY": 0.0}
+
+    result = get_buy_candidates(
+        prices, ["SMOOTH", "CHOPPY"], kama_low, use_risk_adjusted=True,
+    )
+    assert result[0] == "SMOOTH"
+
+
+def test_precomputed_er_scoring(simple_prices, simple_tickers, kama_low):
+    """Precomputed ER path should produce same ranking as non-precomputed."""
+    result_basic = get_buy_candidates(
+        simple_prices, simple_tickers, kama_low, use_risk_adjusted=True,
+    )
+    # Compute precomputed values matching non-precomputed logic
+    momentum = pd.Series({
+        t: simple_prices[t].iloc[-1] / simple_prices[t].iloc[0] - 1.0
+        for t in simple_tickers
+    })
+    er_values = {}
+    for t in simple_tickers:
+        s = simple_prices[t].dropna()
+        pc = abs(s.iloc[-1] - s.iloc[0])
+        vol = s.diff().abs().iloc[1:].sum()
+        er_values[t] = min(pc / vol, 1.0) if vol > 1e-8 else 0.0
+    er = pd.Series(er_values)
+
+    result_precomputed = get_buy_candidates(
+        simple_prices.iloc[[-1]], simple_tickers, kama_low,
+        use_risk_adjusted=True,
+        precomputed_momentum=momentum,
+        precomputed_er=er,
+    )
+    assert result_basic == result_precomputed
+
+
+def test_kama_slope_filter_removes_flat_kama():
+    """When slope filter is on, tickers with flat/falling KAMA should be excluded."""
+    dates = pd.bdate_range("2023-01-02", periods=50)
+    prices = pd.DataFrame({
+        "UP": np.linspace(100, 150, 50),
+        "FLAT": np.linspace(100, 130, 50),
+    }, index=dates)
+
+    kama_current = {"UP": 90.0, "FLAT": 90.0}  # both pass Close > KAMA
+    kama_prev = {"UP": 85.0, "FLAT": 95.0}  # UP: slope up, FLAT: slope down
+
+    result = get_buy_candidates(
+        prices, ["UP", "FLAT"], kama_current,
+        kama_slope_filter=True,
+        kama_prev_values=kama_prev,
+    )
+    assert "UP" in result
+    assert "FLAT" not in result
+
+
+def test_kama_slope_filter_disabled_by_default():
+    """With slope filter off, tickers with falling KAMA still pass."""
+    dates = pd.bdate_range("2023-01-02", periods=50)
+    prices = pd.DataFrame({
+        "UP": np.linspace(100, 150, 50),
+        "FLAT": np.linspace(100, 130, 50),
+    }, index=dates)
+
+    kama_current = {"UP": 90.0, "FLAT": 90.0}
+    kama_prev = {"UP": 85.0, "FLAT": 95.0}
+
+    result = get_buy_candidates(
+        prices, ["UP", "FLAT"], kama_current,
+        kama_slope_filter=False,
+        kama_prev_values=kama_prev,
+    )
+    assert "UP" in result
+    assert "FLAT" in result

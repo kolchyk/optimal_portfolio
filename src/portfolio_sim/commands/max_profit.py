@@ -59,7 +59,7 @@ def register(subparsers) -> None:
 
 def _run_verification(
     close_prices, open_prices, tickers, initial_capital, params, universe_name,
-    output_dir=None,
+    output_dir=None, eval_start=None, eval_end=None,
 ):
     """Run simulation with given params and print metrics."""
     print(f"\n{'=' * 70}")
@@ -71,8 +71,18 @@ def _run_verification(
         params=params, show_progress=True,
     )
 
-    strat_metrics = compute_metrics(result.equity)
-    spy_metrics = compute_metrics(result.spy_equity)
+    equity = result.equity
+    spy_equity = result.spy_equity
+
+    if eval_start:
+        equity = equity.loc[eval_start:]
+        spy_equity = spy_equity.loc[eval_start:]
+    if eval_end:
+        equity = equity.loc[:eval_end]
+        spy_equity = spy_equity.loc[:eval_end]
+
+    strat_metrics = compute_metrics(equity)
+    spy_metrics = compute_metrics(spy_equity)
 
     print(f"\n{format_comparison_table(strat_metrics, spy_metrics)}")
 
@@ -119,6 +129,8 @@ def run(args) -> None:
         close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
         etf_params, "Cross-Asset ETF",
         output_dir=output_dir,
+        eval_start=args.start,
+        eval_end=args.end,
     )
 
     fixed = {
@@ -128,6 +140,8 @@ def run(args) -> None:
 
     print(f"\n{'=' * 70}")
     print(f"OPTUNA SEARCH — Cross-Asset ETF ({args.n_trials} trials)")
+    if args.start or args.end:
+        print(f"Evaluation Period: {args.start or 'start'} to {args.end or 'now'}")
     print(f"{'=' * 70}\n")
 
     etf_result = run_max_profit_search(
@@ -138,6 +152,8 @@ def run(args) -> None:
         n_trials=args.n_trials,
         n_workers=args.n_workers,
         max_dd_limit=args.max_dd,
+        eval_start=args.start,
+        eval_end=args.end,
     )
 
     report_etf = format_max_profit_report(etf_result)
@@ -157,8 +173,18 @@ def run(args) -> None:
             close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
             params=best_params, show_progress=True,
         )
+        
+        best_equity = best_result.equity
+        best_spy_equity = best_result.spy_equity
+        if args.start:
+            best_equity = best_equity.loc[args.start:]
+            best_spy_equity = best_spy_equity.loc[args.start:]
+        if args.end:
+            best_equity = best_equity.loc[:args.end]
+            best_spy_equity = best_spy_equity.loc[:args.end]
+            
         save_equity_png(
-            best_result.equity, best_result.spy_equity, output_dir,
+            best_equity, best_spy_equity, output_dir,
             title=f"Best Parameters: kama={best_params.kama_period}, lbk={best_params.lookback_period}, buf={best_params.kama_buffer:.3f}, top_n={best_params.top_n}",
             filename="best_equity_curve.png",
         )

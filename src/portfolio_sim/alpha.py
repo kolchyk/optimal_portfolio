@@ -2,8 +2,10 @@
 
 Selects buy candidates from the universe based on:
   1. KAMA trend filter: keep stocks where Close > KAMA * (1 + KAMA_BUFFER).
-  2. Risk-adjusted momentum ranking: sort by return/volatility (Sharpe-like
-     momentum), take top N.  This prefers strong AND smooth uptrends.
+     Optional slope gate: require KAMA trending up (kama_now > kama_prev).
+  2. ER²-adjusted momentum ranking: sort by return * ER² (Cascade-style
+     momentum), take top N.  Harshly penalizes choppy action, rewards
+     smooth directional trends.
 
 Does NOT dictate weights — sizing is handled by the engine.
 """
@@ -25,7 +27,9 @@ def get_buy_candidates(
     top_n: int = TOP_N,
     use_risk_adjusted: bool = True,
     precomputed_momentum: pd.Series | None = None,
-    precomputed_vol: pd.Series | None = None,
+    precomputed_er: pd.Series | None = None,
+    kama_prev_values: dict[str, float] | None = None,
+    kama_slope_filter: bool = False,
 ) -> list[str]:
     """Return an ordered list of top-momentum tickers passing the KAMA filter.
 
@@ -36,13 +40,16 @@ def get_buy_candidates(
         kama_values: {ticker: current_kama_value} for KAMA filter.
         kama_buffer: hysteresis buffer for KAMA filter (default from config).
         top_n: maximum number of candidates to return (default from config).
-        use_risk_adjusted: if True, rank by return/volatility instead of raw
-                           return.  Prefers smooth uptrends.
+        use_risk_adjusted: if True, rank by return * ER² instead of raw
+                           return.  Harshly penalizes choppy price action.
         precomputed_momentum: optional pre-computed momentum (return) per ticker
                               for the current date. When provided, avoids
                               recomputing from prices_window.
-        precomputed_vol: optional pre-computed rolling volatility per ticker
-                         for the current date. Used with precomputed_momentum.
+        precomputed_er: optional pre-computed Efficiency Ratio per ticker
+                        for the current date. Used with precomputed_momentum
+                        for ER²-adjusted scoring.
+        kama_prev_values: {ticker: previous_day_kama_value} for slope gate.
+        kama_slope_filter: if True, require KAMA trending up (kama > kama_prev).
 
     Returns:
         List of up to *top_n* ticker symbols, ranked by descending score.
@@ -58,6 +65,11 @@ def get_buy_candidates(
         if np.isnan(close) or np.isnan(kama):
             continue
         if close > kama * (1 + kama_buffer):
+            # Optional KAMA slope gate: require upward KAMA trend
+            if kama_slope_filter and kama_prev_values is not None:
+                kama_prev = kama_prev_values.get(t, np.nan)
+                if not np.isnan(kama_prev) and kama <= kama_prev:
+                    continue
             candidates.append(t)
 
     if not candidates:
@@ -71,10 +83,10 @@ def get_buy_candidates(
             raw_return = precomputed_momentum.get(t, np.nan)
             if np.isnan(raw_return) or raw_return <= 0:
                 continue
-            if use_risk_adjusted and precomputed_vol is not None:
-                vol = precomputed_vol.get(t, np.nan)
-                if not np.isnan(vol) and vol > 1e-8:
-                    scores[t] = raw_return / vol
+            if use_risk_adjusted and precomputed_er is not None:
+                er = precomputed_er.get(t, np.nan)
+                if not np.isnan(er):
+                    scores[t] = raw_return * (er ** 2)
                 else:
                     scores[t] = raw_return
             else:
@@ -92,12 +104,14 @@ def get_buy_candidates(
                 continue
 
             if use_risk_adjusted:
-                daily_returns = series.pct_change().dropna()
-                vol = daily_returns.std()
-                if vol > 1e-8:
-                    scores[t] = raw_return / vol
+                price_change = abs(close_now - close_past)
+                daily_abs_diffs = series.diff().abs().iloc[1:]
+                volatility_sum = daily_abs_diffs.sum()
+                if volatility_sum > 1e-8:
+                    er = min(price_change / volatility_sum, 1.0)
                 else:
-                    scores[t] = raw_return
+                    er = 0.0
+                scores[t] = raw_return * (er ** 2)
             else:
                 scores[t] = raw_return
 

@@ -791,8 +791,16 @@ def _render_sidebar() -> dict:
             use_risk_adjusted = st.toggle(
                 "Риск-адаптированный моментум",
                 value=True if is_etf_mode else False,
-                help="Ранжирование по доходности/волатильности вместо сырой доходности. "
-                     "Предпочитает плавные восходящие тренды.",
+                help="Ранжирование по доходность × ER² (Efficiency Ratio). "
+                     "Жёстко штрафует хаотичное движение, "
+                     "предпочитает плавные восходящие тренды.",
+            )
+
+            kama_slope_filter = st.toggle(
+                "KAMA slope gate",
+                value=False,
+                help="Требовать, чтобы KAMA была направлена вверх для входа. "
+                     "Дополнительная фильтрация: не покупать активы с плоской KAMA.",
             )
 
         # --- Группа 3: Расширенные настройки ---
@@ -835,6 +843,7 @@ def _render_sidebar() -> dict:
         "lookback_period": lookback_period,
         "kama_buffer": kama_buffer,
         "use_risk_adjusted": use_risk_adjusted,
+        "kama_slope_filter": kama_slope_filter,
         "sizing_mode": sizing_mode,
         "vol_lookback": vol_lookback,
         "max_weight": max_weight,
@@ -1004,6 +1013,7 @@ def main():
         # Base param kwargs shared across all branches
         common_kwargs = dict(
             use_risk_adjusted=sidebar["use_risk_adjusted"],
+            kama_slope_filter=sidebar["kama_slope_filter"],
             sizing_mode=sidebar["sizing_mode"],
             volatility_lookback=sidebar["vol_lookback"],
             max_weight=sidebar["max_weight"],
