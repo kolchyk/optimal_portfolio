@@ -16,10 +16,10 @@ RISK_FREE_RATE: float = 0.04
 # ---------------------------------------------------------------------------
 # Strategy parameters — concentrated momentum (4x S&P 500 target)
 # ---------------------------------------------------------------------------
-KAMA_PERIOD: int = 30
-LOOKBACK_PERIOD: int = 20
-TOP_N: int = 5
-KAMA_BUFFER: float = 0.005
+KAMA_PERIOD: int = 40
+LOOKBACK_PERIOD: int = 40
+TOP_N: int = 25
+KAMA_BUFFER: float = 0.01
 
 # ---------------------------------------------------------------------------
 # Tickers

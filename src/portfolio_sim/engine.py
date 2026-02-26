@@ -295,6 +295,24 @@ def _cap_and_redistribute(
     return result
 
 
+def _inv_vols_to_weights(
+    inv_vols: dict[str, float],
+    tickers_to_buy: list[str],
+    max_weight: float = 1.0,
+) -> dict[str, float]:
+    """Normalize inverse-volatility values into capped portfolio weights.
+
+    Falls back to equal weight when no valid inverse-volatility could be
+    computed for any ticker.
+    """
+    if not inv_vols:
+        return {t: 1.0 / len(tickers_to_buy) for t in tickers_to_buy}
+
+    total = sum(inv_vols.values())
+    weights = {t: v / total for t, v in inv_vols.items()}
+    return _cap_and_redistribute(weights, max_weight)
+
+
 def _compute_inverse_vol_weights(
     tickers_to_buy: list[str],
     close_prices_window: pd.DataFrame,
@@ -327,12 +345,7 @@ def _compute_inverse_vol_weights(
         else:
             inv_vols[t] = 1.0  # near-zero vol: treat as equal weight
 
-    if not inv_vols:
-        return {t: 1.0 / len(tickers_to_buy) for t in tickers_to_buy}
-
-    total = sum(inv_vols.values())
-    weights = {t: v / total for t, v in inv_vols.items()}
-    return _cap_and_redistribute(weights, max_weight)
+    return _inv_vols_to_weights(inv_vols, tickers_to_buy, max_weight)
 
 
 def _compute_inverse_vol_weights_fast(
@@ -359,12 +372,7 @@ def _compute_inverse_vol_weights_fast(
         else:
             inv_vols[t] = 1.0  # near-zero vol: treat as equal weight
 
-    if not inv_vols:
-        return {t: 1.0 / len(tickers_to_buy) for t in tickers_to_buy}
-
-    total = sum(inv_vols.values())
-    weights = {t: v / total for t, v in inv_vols.items()}
-    return _cap_and_redistribute(weights, max_weight)
+    return _inv_vols_to_weights(inv_vols, tickers_to_buy, max_weight)
 
 
 def _execute_trades(

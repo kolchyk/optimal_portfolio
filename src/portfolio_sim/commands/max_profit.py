@@ -47,6 +47,14 @@ def register(subparsers) -> None:
         "--n-trials", type=int, default=50,
         help="Number of Optuna trials per universe (default: 50)",
     )
+    p.add_argument(
+        "--start", type=str, default=None,
+        help="Start date for backtest period (e.g. 2023-01-01)",
+    )
+    p.add_argument(
+        "--end", type=str, default=None,
+        help="End date for backtest period (e.g. 2024-12-31)",
+    )
 
 
 def _run_verification(

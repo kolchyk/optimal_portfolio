@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
 Custom simulation runner for specified parameters:
-kama=30, lbk=20, top_n=5, buf=0.005
 """
 
 import pandas as pd
@@ -17,10 +16,10 @@ from src.portfolio_sim.reporting import compute_metrics, save_equity_png, format
 def main():
     # 1. Setup parameters
     params = StrategyParams(
-        kama_period=30,
-        lookback_period=20,
-        top_n=5,
-        kama_buffer=0.005,
+        kama_period=40,
+        lookback_period=40,
+        top_n=25,
+        kama_buffer=0.01,
     )
     
     # 2. Prepare output directory
