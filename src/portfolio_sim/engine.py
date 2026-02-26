@@ -3,9 +3,6 @@
 Signals computed on Close(T), execution on Open(T+1).
 
 Key design decisions that prevent capital destruction:
-  - Market Breathing with hysteresis: SPY must cross KAMA by ±KAMA_BUFFER to
-    flip regime, preventing sell-all/buy-all churn in sideways markets.
-    (Controlled by enable_regime_filter; disabled for cross-asset ETF mode.)
   - Lazy hold: positions are sold ONLY when their own KAMA stop-loss triggers,
     never because they dropped in the momentum ranking.
   - Position sizing: strict 1/TOP_N (equal weight) OR inverse-volatility
@@ -53,7 +50,7 @@ def run_simulation(
                     when *None*.
 
     Returns:
-        SimulationResult with equity curves, holdings history, regime, and trades.
+        SimulationResult with equity curves, holdings history, and trades.
     """
     p = params or StrategyParams()
     # ------------------------------------------------------------------
@@ -93,11 +90,9 @@ def run_simulation(
 
     pending_trades: dict[str, float] | None = None
     pending_weights: dict[str, float] | None = None  # risk parity weights for pending buys
-    is_bull = True  # regime memory — persists across days (hysteresis)
 
     # Tracking for dashboard
     cash_values: list[float] = []
-    regime_values: list[bool] = [] if p.enable_regime_filter else None
     holdings_rows: list[dict[str, float]] = []
     trade_log: list[dict] = []
 
@@ -145,40 +140,19 @@ def run_simulation(
 
         # Record daily snapshot
         cash_values.append(cash)
-        if regime_values is not None:
-            regime_values.append(is_bull)
         holdings_rows.append({t: shares.get(t, 0.0) for t in tickers})
 
         if equity_value <= 0:
             remaining = len(sim_dates) - i - 1
             equity_values.extend([0.0] * remaining)
             cash_values.extend([0.0] * remaining)
-            if regime_values is not None:
-                regime_values.extend([False] * remaining)
             empty_row = {t: 0.0 for t in tickers}
             holdings_rows.extend([empty_row] * remaining)
             break
 
         # --- Compute signals on Close(T) for Open(T+1) ---
 
-        # Market Breathing with hysteresis buffer (optional regime filter).
-        if p.enable_regime_filter:
-            spy_close = daily_close.get(SPY_TICKER, np.nan)
-            spy_kama_s = kama_cache.get(SPY_TICKER, pd.Series(dtype=float))
-            spy_kama = spy_kama_s.get(date, np.nan) if date in spy_kama_s.index else np.nan
-
-            if not np.isnan(spy_close) and not np.isnan(spy_kama):
-                if is_bull and spy_close < spy_kama * (1 - p.kama_buffer):
-                    is_bull = False
-                elif not is_bull and spy_close > spy_kama * (1 + p.kama_buffer):
-                    is_bull = True
-
-            if not is_bull:
-                if shares:
-                    pending_trades = {}
-                continue
-
-        # FIX #1: Sell ONLY on individual KAMA stop-loss.
+        # Sell ONLY on individual KAMA stop-loss.
         # A stock dropping from rank 20 to rank 50 is irrelevant
         # as long as its own trend (Close > KAMA) holds.
         sells: dict[str, float] = {}
@@ -252,18 +226,12 @@ def run_simulation(
 
     holdings_df = pd.DataFrame(holdings_rows, index=idx)
     cash_series = pd.Series(cash_values, index=idx)
-    regime_series = (
-        pd.Series(regime_values, index=idx, dtype=bool)
-        if regime_values is not None
-        else None
-    )
 
     return SimulationResult(
         equity=equity_series,
         spy_equity=spy_series,
         holdings_history=holdings_df,
         cash_history=cash_series,
-        regime_history=regime_series,
         trade_log=trade_log,
     )
 
@@ -356,7 +324,6 @@ def _execute_trades(
     """Execute trades. Mutates ``shares`` in place. Returns remaining cash.
 
     Convention:
-      - trades == {} (empty dict): sell everything (bear regime).
       - trades[t] == 0.0: sell position t.
       - trades[t] == 1.0: buy position t.
 
@@ -365,16 +332,6 @@ def _execute_trades(
     *max_weight* caps any single position at equity_at_open * max_weight.
     """
     total_cost = 0.0
-
-    # Bear regime: liquidate everything
-    if not trades:
-        for t in list(shares.keys()):
-            price = open_prices.get(t, 0.0)
-            if price > 0 and shares[t] > 0:
-                trade_value = shares[t] * price
-                total_cost += trade_value * COST_RATE
-            del shares[t]
-        return equity_at_open - total_cost
 
     # Execute individual stop-loss sells
     for t, action in list(trades.items()):

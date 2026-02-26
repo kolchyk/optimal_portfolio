@@ -77,7 +77,6 @@ def test_format_asset_report():
         holdings_history=holdings,
         cash_history=cash,
         trade_log=trade_log,
-        regime_history=None
     )
     
     close_prices = pd.DataFrame(

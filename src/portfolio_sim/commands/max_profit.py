@@ -108,7 +108,6 @@ def run(args) -> None:
 
     etf_params = StrategyParams(
         use_risk_adjusted=True,
-        enable_regime_filter=False,
         enable_correlation_filter=True,
         sizing_mode="risk_parity",
     )

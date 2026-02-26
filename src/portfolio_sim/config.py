@@ -161,7 +161,6 @@ MAX_PROFIT_SPACE = {
     "lookback_period": {"type": "int", "low": 20, "high": 100, "step": 20},
     "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
     "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
-    "enable_regime_filter": {"type": "categorical", "choices": [True, False]},
     "enable_correlation_filter": {"type": "categorical", "choices": [True, False]},
     "correlation_threshold": {"type": "float", "low": 0.5, "high": 0.95, "step": 0.05},
 }

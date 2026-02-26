@@ -44,8 +44,6 @@ COLOR_BENCHMARK = "#888888"
 COLOR_POSITIVE = "#00c853"
 COLOR_NEGATIVE = "#ff1744"
 COLOR_DRAWDOWN = "#e74c3c"
-COLOR_BULL_BG = "rgba(0, 200, 83, 0.07)"
-COLOR_BEAR_BG = "rgba(255, 23, 68, 0.07)"
 COLOR_FRONTIER = "#FFD700"
 COLOR_PORTFOLIO = "#00E676"
 
@@ -231,16 +229,6 @@ def plot_equity_curve(
             line=dict(color=COLOR_BENCHMARK, width=1.5, dash="dash"),
         )
     )
-
-    # Regime shading (only when regime filter is enabled)
-    if result.regime_history is not None:
-        regime = result.regime_history
-        changes = regime.ne(regime.shift()).cumsum()
-        for _, group in regime.groupby(changes):
-            start = group.index[0]
-            end = group.index[-1]
-            color = COLOR_BULL_BG if group.iloc[0] else COLOR_BEAR_BG
-            fig.add_vrect(x0=start, x1=end, fillcolor=color, line_width=0, layer="below")
 
     yaxis_type = "log" if log_scale else "linear"
     fig.update_layout(
@@ -846,13 +834,6 @@ def _render_sidebar() -> dict:
                 help="Ограничение веса любого отдельного актива в портфеле"
             ) / 100.0
 
-            enable_regime = st.toggle(
-                "Фильтр режима SPY",
-                value=not is_etf_mode,
-                help="При включении: ликвидировать все позиции, если SPY ниже своей KAMA. "
-                     "Отключите для кросс-активных портфелей.",
-            )
-
     return {
         "universe_mode": universe_mode,
         "is_etf_mode": is_etf_mode,
@@ -874,7 +855,6 @@ def _render_sidebar() -> dict:
         "sizing_mode": sizing_mode,
         "vol_lookback": vol_lookback,
         "max_weight": max_weight,
-        "enable_regime": enable_regime,
         "run_clicked": run_clicked,
     }
 
@@ -1082,7 +1062,6 @@ def main():
         # Base param kwargs shared across all branches
         common_kwargs = dict(
             use_risk_adjusted=sidebar["use_risk_adjusted"],
-            enable_regime_filter=sidebar["enable_regime"],
             enable_correlation_filter=sidebar["enable_correlation"],
             correlation_threshold=sidebar["corr_threshold"],
             sizing_mode=sidebar["sizing_mode"],
@@ -1125,7 +1104,6 @@ def main():
 
             base = _SP(
                 use_risk_adjusted=True,
-                enable_regime_filter=False,
                 enable_correlation_filter=True,
                 sizing_mode="risk_parity",
             )
@@ -1169,7 +1147,6 @@ def main():
             if best is not None:
                 common_kwargs.update(
                     use_risk_adjusted=True,
-                    enable_regime_filter=best.enable_regime_filter,
                     enable_correlation_filter=True,
                     correlation_threshold=0.65,
                     sizing_mode="risk_parity",

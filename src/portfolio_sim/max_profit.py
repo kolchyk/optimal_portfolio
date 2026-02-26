@@ -42,7 +42,7 @@ log = structlog.get_logger()
 # ---------------------------------------------------------------------------
 ALL_PARAM_NAMES: list[str] = [
     "kama_period", "lookback_period", "top_n", "kama_buffer",
-    "use_risk_adjusted", "enable_regime_filter", "sizing_mode",
+    "use_risk_adjusted", "sizing_mode",
     "enable_correlation_filter",
 ]
 
@@ -82,7 +82,7 @@ def compute_cagr_objective(
 # Max-profit param/metric keys for evaluate_combo
 _MP_PARAM_KEYS = [
     "kama_period", "lookback_period", "top_n", "kama_buffer",
-    "use_risk_adjusted", "enable_regime_filter", "sizing_mode",
+    "use_risk_adjusted", "sizing_mode",
     "enable_correlation_filter", "correlation_threshold",
 ]
 _MP_METRIC_KEYS = [
@@ -90,7 +90,7 @@ _MP_METRIC_KEYS = [
     "annualized_vol", "win_rate",
 ]
 _MP_USER_ATTR_KEYS = _MP_METRIC_KEYS + [
-    "use_risk_adjusted", "enable_regime_filter", "sizing_mode",
+    "use_risk_adjusted", "sizing_mode",
     "enable_correlation_filter", "correlation_threshold",
 ]
 
@@ -243,8 +243,7 @@ def format_max_profit_report(
         f"top_n={bp.top_n}, kama_buffer={bp.kama_buffer}"
     )
     lines.append(
-        f"  risk_adjusted={bp.use_risk_adjusted}, regime_filter={bp.enable_regime_filter}, "
-        f"sizing={bp.sizing_mode}"
+        f"  risk_adjusted={bp.use_risk_adjusted}, sizing={bp.sizing_mode}"
     )
     lines.append(
         f"  CAGR: {dm['cagr']:.2%}  Total Return: {dm['total_return']:.2%}  "
@@ -276,7 +275,7 @@ def format_max_profit_report(
         top = valid.nlargest(top_n, "cagr")
         header = (
             f"  {'#':>3} {'kama':>5} {'lbk':>5} {'top_n':>5} {'buf':>7} "
-            f"{'rsk_adj':>7} {'regime':>7} {'sizing':>12} "
+            f"{'rsk_adj':>7} {'sizing':>12} "
             f"{'corr':>5} {'c_thr':>6} "
             f"{'CAGR':>8} {'Return':>9} {'MaxDD':>8} {'Sharpe':>7}"
         )
@@ -289,7 +288,6 @@ def format_max_profit_report(
                 f"{int(row['lookback_period']):>5} "
                 f"{int(row['top_n']):>5} {row['kama_buffer']:>7.4f} "
                 f"{'Y' if row['use_risk_adjusted'] else 'N':>7} "
-                f"{'Y' if row['enable_regime_filter'] else 'N':>7} "
                 f"{row['sizing_mode']:>12} "
                 f"{corr_flag:>5} {row.get('correlation_threshold', 0):>6.2f} "
                 f"{row['cagr']:>8.2%} {row['total_return']:>9.2%} "

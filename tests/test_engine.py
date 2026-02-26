@@ -1,4 +1,4 @@
-"""Tests for simulation engine (Long/Cash only) with lazy hold + hysteresis."""
+"""Tests for simulation engine (Long/Cash only) with lazy hold."""
 
 import numpy as np
 import pandas as pd
@@ -60,83 +60,6 @@ def test_equity_positive(sim_data):
     assert (equity >= 0).all()
 
 
-def test_bear_regime_preserves_capital():
-    """When SPY is in strong downtrend AND regime filter is ON, strategy should go to cash."""
-    np.random.seed(42)
-    n = 250
-    dates = pd.bdate_range("2022-01-03", periods=n)
-    tickers = [f"T{i:02d}" for i in range(5)]
-
-    data = {}
-    for t in tickers:
-        data[t] = 100 * np.exp(
-            np.cumsum(np.random.normal(-0.005, 0.01, n))
-        )
-    data["SPY"] = 100 * np.exp(
-        np.cumsum(np.random.normal(-0.005, 0.01, n))
-    )
-
-    close = pd.DataFrame(data, index=dates)
-    open_ = close.copy()
-
-    params = StrategyParams(enable_regime_filter=True)
-    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL, params=params)
-    strat_return = result.equity.iloc[-1] / result.equity.iloc[0] - 1
-    spy_return = result.spy_equity.iloc[-1] / result.spy_equity.iloc[0] - 1
-    assert strat_return > spy_return
-
-
-def test_execute_trades_bear_sellall_no_double_counting():
-    """Bear regime sell-all must return equity_at_open minus costs, not more."""
-    shares = {"AAPL": 10.0, "MSFT": 5.0}
-    open_prices = pd.Series({"AAPL": 150.0, "MSFT": 300.0})
-
-    equity_at_open = 5000.0
-    trades = {}
-
-    returned_cash = _execute_trades(shares, trades, equity_at_open, open_prices)
-
-    expected_cost = 3000.0 * COST_RATE
-    expected_cash = equity_at_open - expected_cost
-
-    assert shares == {}
-    assert returned_cash == pytest.approx(expected_cash)
-    assert returned_cash < equity_at_open
-
-
-def test_execute_trades_bear_sellall_no_positions():
-    """Bear sell-all with no positions should return equity minus zero costs."""
-    shares = {}
-    open_prices = pd.Series(dtype=float)
-    equity_at_open = 10000.0
-    trades = {}
-
-    returned_cash = _execute_trades(shares, trades, equity_at_open, open_prices)
-    assert returned_cash == pytest.approx(equity_at_open)
-
-
-def test_bear_regime_equity_does_not_inflate():
-    """Equity must never significantly exceed initial capital in a pure bear scenario
-    when regime filter is enabled."""
-    np.random.seed(99)
-    n = 200
-    dates = pd.bdate_range("2022-01-03", periods=n)
-    tickers = [f"T{i:02d}" for i in range(5)]
-
-    data = {}
-    for t in tickers:
-        data[t] = 100 * np.exp(np.cumsum(np.random.normal(0.001, 0.005, n)))
-    data["SPY"] = 100 * np.exp(np.cumsum(np.full(n, -0.01)))
-
-    close = pd.DataFrame(data, index=dates)
-    open_ = close.copy()
-
-    params = StrategyParams(enable_regime_filter=True)
-    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL, params=params)
-    equity = result.equity
-    assert equity.max() < INITIAL_CAPITAL * 1.10
-
-
 def test_strict_slot_sizing_single_buy():
     """FIX #3: A single buy must get at most 1/TOP_N of equity, not all cash."""
     shares = {}
@@ -166,54 +89,7 @@ def test_strict_slot_sizing_prevents_concentration():
 
 
 # ---------------------------------------------------------------------------
-# New tests: regime filter disabled
-# ---------------------------------------------------------------------------
-def test_no_regime_filter_holds_during_spy_crash():
-    """Without regime filter, individual positions stay even when SPY crashes."""
-    np.random.seed(42)
-    n = 250
-    dates = pd.bdate_range("2022-01-03", periods=n)
-    tickers = [f"T{i:02d}" for i in range(5)]
-
-    data = {}
-    # Tickers in strong uptrend
-    for t in tickers:
-        data[t] = 100 * np.exp(
-            np.cumsum(np.random.normal(0.003, 0.01, n))
-        )
-    # SPY crashes
-    data["SPY"] = 100 * np.exp(np.cumsum(np.full(n, -0.005)))
-
-    close = pd.DataFrame(data, index=dates)
-    open_ = close.copy()
-
-    params = StrategyParams(enable_regime_filter=False)
-    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL, params=params)
-
-    # Should still have holdings (not all liquidated)
-    final_holdings = result.holdings_history.iloc[-1]
-    assert final_holdings.sum() > 0, "Positions should be held when regime filter is off"
-
-
-def test_regime_history_none_when_filter_disabled(sim_data):
-    """regime_history should be None when enable_regime_filter=False."""
-    close, open_, tickers = sim_data
-    params = StrategyParams(enable_regime_filter=False)
-    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL, params=params)
-    assert result.regime_history is None
-
-
-def test_regime_history_present_when_filter_enabled(sim_data):
-    """regime_history should be a Series when enable_regime_filter=True."""
-    close, open_, tickers = sim_data
-    params = StrategyParams(enable_regime_filter=True)
-    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL, params=params)
-    assert result.regime_history is not None
-    assert isinstance(result.regime_history, pd.Series)
-
-
-# ---------------------------------------------------------------------------
-# New tests: risk parity sizing
+# Risk parity sizing
 # ---------------------------------------------------------------------------
 def test_execute_trades_with_weights():
     """Verify _execute_trades respects provided risk parity weights."""

@@ -17,11 +17,10 @@ from src.portfolio_sim.reporting import compute_metrics, save_equity_png, format
 def main():
     # 1. Setup parameters
     params = StrategyParams(
-        kama_period=10,
-        lookback_period=40,
+        kama_period=20,
+        lookback_period=60,
         top_n=20,
-        kama_buffer=0.025,
-        enable_regime_filter=True   # Default is True, but good to be explicit
+        kama_buffer=0.02,
     )
     
     # 2. Prepare output directory

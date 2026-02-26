@@ -26,9 +26,6 @@ class StrategyParams:
     kama_buffer: float = KAMA_BUFFER
     use_risk_adjusted: bool = False
 
-    # Market regime filter (SPY-based global kill switch)
-    enable_regime_filter: bool = True
-
     # Correlation filter (greedy diversification)
     enable_correlation_filter: bool = False
     correlation_threshold: float = CORRELATION_THRESHOLD

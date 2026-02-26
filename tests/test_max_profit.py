@@ -69,7 +69,6 @@ def test_run_max_profit_search_end_to_end(synthetic_prices, synthetic_open_price
         "top_n": {"type": "int", "low": 5, "high": 5, "step": 1},
         "kama_buffer": {"type": "float", "low": 0.01, "high": 0.01, "step": 0.01},
         "use_risk_adjusted": {"type": "categorical", "choices": [True]},
-        "enable_regime_filter": {"type": "categorical", "choices": [False]},
         "sizing_mode": {"type": "categorical", "choices": ["equal_weight"]},
     }
 
@@ -97,7 +96,6 @@ def test_format_max_profit_report():
         "top_n": [5, 5],
         "kama_buffer": [0.01, 0.01],
         "use_risk_adjusted": [True, True],
-        "enable_regime_filter": [True, True],
         "sizing_mode": ["equal_weight", "equal_weight"],
         "objective_cagr": [0.15, 0.20],
         "total_return": [0.5, 0.7],
