@@ -9,17 +9,19 @@ from src.portfolio_sim.config import (
     COMMISSION_RATE,
     CORRELATION_LOOKBACK,
     CORRELATION_THRESHOLD,
+    DEFAULT_N_TRIALS,
     ETF_UNIVERSE,
     INITIAL_CAPITAL,
     KAMA_BUFFER,
     KAMA_PERIOD,
     LOOKBACK_PERIOD,
     RISK_FREE_RATE,
+    SENSITIVITY_SPACE,
     SLIPPAGE_RATE,
     TOP_N,
     VOLATILITY_LOOKBACK,
 )
-from src.portfolio_sim.optimizer import DEFAULT_N_TRIALS, PARAM_NAMES, SENSITIVITY_SPACE
+from src.portfolio_sim.optimizer import PARAM_NAMES
 
 _BUFFER_PCT = KAMA_BUFFER * 100
 _N_ETF = len(ETF_UNIVERSE)

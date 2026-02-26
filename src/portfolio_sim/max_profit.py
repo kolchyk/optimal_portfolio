@@ -21,7 +21,11 @@ import pandas as pd
 import structlog
 from tqdm import tqdm
 
-from src.portfolio_sim.config import INITIAL_CAPITAL
+from src.portfolio_sim.config import (
+    DEFAULT_MAX_PROFIT_TRIALS,
+    INITIAL_CAPITAL,
+    MAX_PROFIT_SPACE,
+)
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.optimizer import (
     _get_kama_periods_from_space,
@@ -34,21 +38,8 @@ from src.portfolio_sim.reporting import compute_metrics
 log = structlog.get_logger()
 
 # ---------------------------------------------------------------------------
-# Default search space for max profit search
+# Result dataclass
 # ---------------------------------------------------------------------------
-MAX_PROFIT_SPACE: dict[str, dict] = {
-    "kama_period": {"type": "categorical", "choices": [10, 15, 20, 30]},
-    "lookback_period": {"type": "int", "low": 20, "high": 100, "step": 20},
-    "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
-    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
-    "enable_regime_filter": {"type": "categorical", "choices": [True, False]},
-    "enable_correlation_filter": {"type": "categorical", "choices": [True, False]},
-    "correlation_threshold": {"type": "float", "low": 0.5, "high": 0.95, "step": 0.05},
-    "correlation_lookback": {"type": "categorical", "choices": [30, 60, 90, 120]},
-}
-
-DEFAULT_MAX_PROFIT_TRIALS: int = 50
-
 ALL_PARAM_NAMES: list[str] = [
     "kama_period", "lookback_period", "top_n", "kama_buffer",
     "use_risk_adjusted", "enable_regime_filter", "sizing_mode",
@@ -56,9 +47,6 @@ ALL_PARAM_NAMES: list[str] = [
 ]
 
 
-# ---------------------------------------------------------------------------
-# Result dataclass
-# ---------------------------------------------------------------------------
 @dataclass
 class MaxProfitResult:
     """Results from a max-profit parameter search."""
@@ -95,7 +83,7 @@ def compute_cagr_objective(
 _MP_PARAM_KEYS = [
     "kama_period", "lookback_period", "top_n", "kama_buffer",
     "use_risk_adjusted", "enable_regime_filter", "sizing_mode",
-    "enable_correlation_filter", "correlation_threshold", "correlation_lookback",
+    "enable_correlation_filter", "correlation_threshold",
 ]
 _MP_METRIC_KEYS = [
     "total_return", "cagr", "max_drawdown", "sharpe", "calmar",
@@ -103,7 +91,7 @@ _MP_METRIC_KEYS = [
 ]
 _MP_USER_ATTR_KEYS = _MP_METRIC_KEYS + [
     "use_risk_adjusted", "enable_regime_filter", "sizing_mode",
-    "enable_correlation_filter", "correlation_threshold", "correlation_lookback",
+    "enable_correlation_filter", "correlation_threshold",
 ]
 
 

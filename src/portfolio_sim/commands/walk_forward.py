@@ -114,7 +114,6 @@ def run(args) -> None:
             "top_n": step.optimized_params.top_n,
             "enable_correlation_filter": step.optimized_params.enable_correlation_filter,
             "correlation_threshold": step.optimized_params.correlation_threshold,
-            "correlation_lookback": step.optimized_params.correlation_lookback,
             "is_cagr": step.is_metrics.get("cagr", 0),
             "is_maxdd": step.is_metrics.get("max_drawdown", 0),
             "oos_cagr": step.oos_metrics.get("cagr", 0),
@@ -132,5 +131,4 @@ def run(args) -> None:
     print(f"  kama_period={fp.kama_period}, lookback_period={fp.lookback_period}, "
           f"kama_buffer={fp.kama_buffer}, top_n={fp.top_n}, "
           f"enable_corr={fp.enable_correlation_filter}, "
-          f"corr_threshold={fp.correlation_threshold}, "
-          f"corr_lookback={fp.correlation_lookback}")
+          f"corr_threshold={fp.correlation_threshold}")

@@ -817,17 +817,11 @@ def _render_sidebar() -> dict:
                 help="Жадная диверсификация: пропускать активы, слишком коррелированные с корзиной.",
             )
             corr_threshold = CORRELATION_THRESHOLD
-            corr_lookback = CORRELATION_LOOKBACK
             if enable_correlation:
                 corr_threshold = st.slider(
                     "Макс. корреляция", min_value=0.3, max_value=0.95,
                     value=CORRELATION_THRESHOLD, step=0.05,
                     help="Порог для парной корреляции"
-                )
-                corr_lookback = st.slider(
-                    "Окно корреляции (дни)", min_value=20, max_value=120,
-                    value=CORRELATION_LOOKBACK,
-                    help="Окно расчета корреляции в торговых днях"
                 )
 
             sizing_options = ["Equal Weight", "Risk Parity (Inverse Vol)"]
@@ -877,7 +871,6 @@ def _render_sidebar() -> dict:
         "use_risk_adjusted": use_risk_adjusted,
         "enable_correlation": enable_correlation,
         "corr_threshold": corr_threshold,
-        "corr_lookback": corr_lookback,
         "sizing_mode": sizing_mode,
         "vol_lookback": vol_lookback,
         "max_weight": max_weight,
@@ -914,7 +907,6 @@ def _render_optimization_results() -> None:
                 top = valid.nlargest(10, "objective")[
                     ["kama_period", "lookback_period", "kama_buffer", "top_n",
                      "enable_correlation_filter", "correlation_threshold",
-                     "correlation_lookback",
                      "objective", "cagr", "max_drawdown", "sharpe"]
                 ].reset_index(drop=True)
                 top.index += 1
@@ -1093,7 +1085,6 @@ def main():
             enable_regime_filter=sidebar["enable_regime"],
             enable_correlation_filter=sidebar["enable_correlation"],
             correlation_threshold=sidebar["corr_threshold"],
-            correlation_lookback=sidebar["corr_lookback"],
             sizing_mode=sidebar["sizing_mode"],
             volatility_lookback=sidebar["vol_lookback"],
             max_weight=sidebar["max_weight"],
@@ -1122,7 +1113,6 @@ def main():
             fixed = {
                 "enable_correlation_filter": True,
                 "correlation_threshold": 0.65,
-                "correlation_lookback": 60,
                 "use_risk_adjusted": True,
                 "sizing_mode": "risk_parity",
             }
@@ -1182,7 +1172,6 @@ def main():
                     enable_regime_filter=best.enable_regime_filter,
                     enable_correlation_filter=True,
                     correlation_threshold=0.65,
-                    correlation_lookback=60,
                     sizing_mode="risk_parity",
                 )
 
@@ -1220,7 +1209,6 @@ def main():
                 kama_buffer=best.kama_buffer,
                 enable_correlation_filter=best.enable_correlation_filter,
                 correlation_threshold=best.correlation_threshold,
-                correlation_lookback=best.correlation_lookback,
             )
         elif opt_mode != "None":
             st.warning("Optimization found no valid combinations. Using manual parameters.")

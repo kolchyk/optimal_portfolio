@@ -108,7 +108,6 @@ def test_correlation_filter_removes_correlated():
         prices_window=prices,
         top_n=3,
         correlation_threshold=0.65,
-        correlation_lookback=60,
     )
     assert "A" in result, "First ranked ticker should always be selected"
     assert "B" not in result, "B is too correlated with A and should be skipped"
@@ -131,7 +130,6 @@ def test_correlation_filter_all_uncorrelated():
         prices_window=prices,
         top_n=4,
         correlation_threshold=0.65,
-        correlation_lookback=60,
     )
     assert len(result) == 4
 
@@ -152,7 +150,6 @@ def test_correlation_filter_respects_top_n():
         prices_window=prices,
         top_n=2,
         correlation_threshold=0.99,
-        correlation_lookback=60,
     )
     assert len(result) <= 2
 
@@ -161,7 +158,7 @@ def test_correlation_filter_empty_input():
     """Empty ranked_tickers returns empty list."""
     prices = pd.DataFrame()
     result = _greedy_correlation_filter(
-        [], prices, top_n=5, correlation_threshold=0.65, correlation_lookback=60,
+        [], prices, top_n=5, correlation_threshold=0.65,
     )
     assert result == []
 
@@ -177,7 +174,6 @@ def test_correlation_filter_insufficient_data_falls_back():
         prices_window=prices,
         top_n=2,
         correlation_threshold=0.1,  # very strict — would filter everything if data existed
-        correlation_lookback=60,
     )
     assert result == ["A", "B"], "Should fall back to top_n slice when insufficient data"
 

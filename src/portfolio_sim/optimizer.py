@@ -23,7 +23,12 @@ import pandas as pd
 import structlog
 from tqdm import tqdm
 
-from src.portfolio_sim.config import INITIAL_CAPITAL, SPY_TICKER
+from src.portfolio_sim.config import (
+    DEFAULT_N_TRIALS,
+    INITIAL_CAPITAL,
+    SENSITIVITY_SPACE,
+    SPY_TICKER,
+)
 from src.portfolio_sim.indicators import compute_kama_series
 from src.portfolio_sim.parallel import (
     _shared,
@@ -51,29 +56,14 @@ def _clamp_to_space(value, spec: dict):
 
 
 # ---------------------------------------------------------------------------
-# Default search space for sensitivity analysis
+# Result dataclass
 # ---------------------------------------------------------------------------
-SENSITIVITY_SPACE: dict[str, dict] = {
-    "kama_period": {"type": "categorical", "choices": [10, 15, 20, 30, 40]},
-    "lookback_period": {"type": "int", "low": 20, "high": 150, "step": 10},
-    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.001},
-    "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
-    "enable_correlation_filter": {"type": "categorical", "choices": [True, False]},
-    "correlation_threshold": {"type": "float", "low": 0.5, "high": 0.95, "step": 0.05},
-    "correlation_lookback": {"type": "categorical", "choices": [30, 60, 90, 120]},
-}
-
-DEFAULT_N_TRIALS: int = 50
-
 PARAM_NAMES: list[str] = [
     "kama_period", "lookback_period", "kama_buffer", "top_n",
-    "enable_correlation_filter", "correlation_threshold", "correlation_lookback",
+    "enable_correlation_filter", "correlation_threshold",
 ]
 
 
-# ---------------------------------------------------------------------------
-# Result dataclass
-# ---------------------------------------------------------------------------
 @dataclass
 class SensitivityResult:
     """Results from a sensitivity analysis."""
@@ -181,7 +171,7 @@ def _get_kama_periods_from_space(space: dict[str, dict]) -> list[int]:
 # Sensitivity param/metric keys for evaluate_combo
 _SENS_PARAM_KEYS = [
     "kama_period", "lookback_period", "kama_buffer", "top_n",
-    "enable_correlation_filter", "correlation_threshold", "correlation_lookback",
+    "enable_correlation_filter", "correlation_threshold",
 ]
 _SENS_METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]
 
@@ -377,8 +367,6 @@ def run_sensitivity(
         mask = mask & (grid_df["enable_correlation_filter"] == base_params.enable_correlation_filter)
     if "correlation_threshold" in grid_df.columns:
         mask = mask & (grid_df["correlation_threshold"] == base_params.correlation_threshold)
-    if "correlation_lookback" in grid_df.columns:
-        mask = mask & (grid_df["correlation_lookback"] == base_params.correlation_lookback)
     base_row = grid_df[mask]
     if not base_row.empty:
         base_objective = float(base_row.iloc[0]["objective"])
@@ -424,7 +412,6 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
     lines.append(f"  top_n:           {bp.top_n}")
     lines.append(f"  enable_corr:     {bp.enable_correlation_filter}")
     lines.append(f"  corr_threshold:  {bp.correlation_threshold}")
-    lines.append(f"  corr_lookback:   {bp.correlation_lookback}")
     if not np.isnan(result.base_objective):
         lines.append(f"  base objective:  {result.base_objective:.4f}")
     else:
@@ -493,7 +480,7 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
         top = valid.nlargest(10, "objective")
         header = (
             f"  {'kama':>5} {'lbk':>5} {'buf':>7} {'top_n':>5} "
-            f"{'corr':>5} {'c_thr':>6} {'c_lbk':>5} "
+            f"{'corr':>5} {'c_thr':>6} "
             f"{'obj':>8} {'cagr':>7} {'maxdd':>7} {'sharpe':>7}"
         )
         lines.append(header)
@@ -503,7 +490,6 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
                 f"  {int(row['kama_period']):>5} {int(row['lookback_period']):>5} "
                 f"{row['kama_buffer']:>7.4f} {int(row['top_n']):>5} "
                 f"{corr_flag:>5} {row.get('correlation_threshold', 0):>6.2f} "
-                f"{int(row.get('correlation_lookback', 0)):>5} "
                 f"{row['objective']:>8.4f} {row['cagr']:>7.2%} "
                 f"{row['max_drawdown']:>7.2%} {row['sharpe']:>7.2f}"
             )
@@ -543,6 +529,4 @@ def find_best_params(result: SensitivityResult) -> StrategyParams | None:
         kwargs["enable_correlation_filter"] = bool(best["enable_correlation_filter"])
     if "correlation_threshold" in best.index:
         kwargs["correlation_threshold"] = float(best["correlation_threshold"])
-    if "correlation_lookback" in best.index:
-        kwargs["correlation_lookback"] = int(best["correlation_lookback"])
     return StrategyParams(**kwargs)

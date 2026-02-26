@@ -131,7 +131,6 @@ ASSET_CLASS_MAP: dict[str, str] = {
 # Correlation filter (greedy diversification)
 # ---------------------------------------------------------------------------
 CORRELATION_THRESHOLD: float = 0.9
-CORRELATION_LOOKBACK: int = 60  # trading days
 
 # ---------------------------------------------------------------------------
 # Position sizing
@@ -143,3 +142,29 @@ VOLATILITY_LOOKBACK: int = 20  # trading days for inverse-vol weighting
 # ---------------------------------------------------------------------------
 DEFAULT_OUTPUT_DIR: Path = Path("output")
 CACHE_DIR: Path = DEFAULT_OUTPUT_DIR / "cache"
+
+
+# ---------------------------------------------------------------------------
+# Optimization search spaces
+# ---------------------------------------------------------------------------
+SENSITIVITY_SPACE = {
+    "kama_period": {"type": "categorical", "choices": [10, 20, 30, 40]},
+    "lookback_period": {"type": "int", "low": 20, "high": 100, "step": 20},
+    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.05},
+    "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
+    "enable_correlation_filter": {"type": "categorical", "choices": [True, False]},
+    "correlation_threshold": {"type": "float", "low": 0.6, "high": 0.9, "step": 0.05},
+}
+
+MAX_PROFIT_SPACE = {
+    "kama_period": {"type": "categorical", "choices": [10, 15, 20, 30]},
+    "lookback_period": {"type": "int", "low": 20, "high": 100, "step": 20},
+    "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
+    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
+    "enable_regime_filter": {"type": "categorical", "choices": [True, False]},
+    "enable_correlation_filter": {"type": "categorical", "choices": [True, False]},
+    "correlation_threshold": {"type": "float", "low": 0.5, "high": 0.95, "step": 0.05},
+}
+
+DEFAULT_N_TRIALS: int = 50
+DEFAULT_MAX_PROFIT_TRIALS: int = 50

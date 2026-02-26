@@ -125,7 +125,6 @@ def run(args) -> None:
     fixed = {
         "enable_correlation_filter": True,
         "correlation_threshold": 0.65,
-        "correlation_lookback": 60,
         "use_risk_adjusted": True,
         "sizing_mode": "risk_parity",
     }

@@ -4,12 +4,12 @@ import numpy as np
 import optuna
 import pandas as pd
 import pytest
+from src.portfolio_sim.config import MAX_PROFIT_SPACE
 from src.portfolio_sim.max_profit import (
-    MAX_PROFIT_SPACE,
-    compute_cagr_objective,
-    run_max_profit_search,
-    format_max_profit_report,
     MaxProfitResult,
+    compute_cagr_objective,
+    format_max_profit_report,
+    run_max_profit_search,
 )
 from src.portfolio_sim.parallel import suggest_params
 from src.portfolio_sim.params import StrategyParams

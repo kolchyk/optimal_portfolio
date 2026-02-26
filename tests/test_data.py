@@ -10,14 +10,13 @@ from src.portfolio_sim.data import (
     fetch_price_data,
     _download_from_yfinance,
 )
-from src.portfolio_sim.config import ETF_UNIVERSE, SPY_TICKER
+from src.portfolio_sim.config import ETF_UNIVERSE
 
 
 def test_fetch_etf_tickers():
-    """Verify ETF tickers are loaded from config."""
+    """Verify ETF tickers are loaded from config (SPY is benchmark-only, not in universe)."""
     tickers = fetch_etf_tickers()
     assert isinstance(tickers, list)
-    assert SPY_TICKER in tickers
     assert len(tickers) == len(ETF_UNIVERSE)
     assert tickers == sorted(ETF_UNIVERSE)
 

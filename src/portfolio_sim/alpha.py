@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 
 from src.portfolio_sim.config import (
-    CORRELATION_LOOKBACK,
     CORRELATION_THRESHOLD,
     KAMA_BUFFER,
     TOP_N,
@@ -26,7 +25,6 @@ def _greedy_correlation_filter(
     prices_window: pd.DataFrame,
     top_n: int,
     correlation_threshold: float,
-    correlation_lookback: int,
 ) -> list[str]:
     """Greedy diversification: select tickers one-by-one, skipping those
     too correlated with already-selected assets.
@@ -36,7 +34,6 @@ def _greedy_correlation_filter(
         prices_window: price DataFrame for computing return correlations.
         top_n: maximum basket size.
         correlation_threshold: max allowed absolute pairwise correlation.
-        correlation_lookback: days of returns to use for correlation.
 
     Returns:
         Filtered list of up to *top_n* diversified tickers.
@@ -49,8 +46,7 @@ def _greedy_correlation_filter(
     if not available:
         return []
 
-    recent_prices = prices_window[available].iloc[-correlation_lookback:]
-    returns = recent_prices.pct_change().dropna()
+    returns = prices_window[available].pct_change().dropna()
 
     if len(returns) < 10:
         # Not enough data for meaningful correlation — skip filter
@@ -93,7 +89,6 @@ def get_buy_candidates(
     top_n: int = TOP_N,
     use_risk_adjusted: bool = True,
     correlation_threshold: float = CORRELATION_THRESHOLD,
-    correlation_lookback: int = CORRELATION_LOOKBACK,
     enable_correlation_filter: bool = False,
 ) -> list[str]:
     """Return an ordered list of top-momentum tickers passing the KAMA filter.
@@ -108,7 +103,6 @@ def get_buy_candidates(
         use_risk_adjusted: if True, rank by return/volatility instead of raw
                            return.  Prefers smooth uptrends.
         correlation_threshold: max allowed pairwise correlation for greedy filter.
-        correlation_lookback: days of returns for correlation computation.
         enable_correlation_filter: if True, apply greedy correlation diversification
                                    after momentum ranking.
 
@@ -160,7 +154,7 @@ def get_buy_candidates(
     if enable_correlation_filter:
         return _greedy_correlation_filter(
             ranked_tickers, prices_window, top_n,
-            correlation_threshold, correlation_lookback,
+            correlation_threshold,
         )
 
     return ranked_tickers[:top_n]

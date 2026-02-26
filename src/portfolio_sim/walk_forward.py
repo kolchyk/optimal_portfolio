@@ -17,11 +17,10 @@ import os
 import pandas as pd
 import structlog
 
-from src.portfolio_sim.config import INITIAL_CAPITAL
+from src.portfolio_sim.config import INITIAL_CAPITAL, SENSITIVITY_SPACE
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.models import WFOResult, WFOStep
 from src.portfolio_sim.optimizer import (
-    SENSITIVITY_SPACE,
     _get_kama_periods_from_space,
     compute_objective,
     find_best_params,
@@ -364,7 +363,6 @@ def format_wfo_report(result: WFOResult) -> str:
     lines.append(f"  top_n:           {fp.top_n}")
     lines.append(f"  enable_corr:     {fp.enable_correlation_filter}")
     lines.append(f"  corr_threshold:  {fp.correlation_threshold}")
-    lines.append(f"  corr_lookback:   {fp.correlation_lookback}")
 
     lines.append("")
     lines.append("=" * 90)

@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 
 from src.portfolio_sim.config import (
-    CORRELATION_LOOKBACK,
     CORRELATION_THRESHOLD,
     KAMA_BUFFER,
     KAMA_PERIOD,
@@ -33,7 +32,6 @@ class StrategyParams:
     # Correlation filter (greedy diversification)
     enable_correlation_filter: bool = False
     correlation_threshold: float = CORRELATION_THRESHOLD
-    correlation_lookback: int = CORRELATION_LOOKBACK
 
     # Position sizing: "equal_weight" or "risk_parity"
     sizing_mode: str = "equal_weight"
@@ -48,6 +46,5 @@ class StrategyParams:
         return max(
             self.lookback_period,
             self.kama_period,
-            self.correlation_lookback,
             self.volatility_lookback,
         ) + 10

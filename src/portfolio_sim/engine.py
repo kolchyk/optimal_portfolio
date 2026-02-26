@@ -210,7 +210,6 @@ def run_simulation(
             kama_buffer=p.kama_buffer, top_n=p.top_n,
             use_risk_adjusted=p.use_risk_adjusted,
             correlation_threshold=p.correlation_threshold,
-            correlation_lookback=p.correlation_lookback,
             enable_correlation_filter=p.enable_correlation_filter,
         )
 
