@@ -18,10 +18,10 @@ def main():
     # 1. Setup parameters
     params = StrategyParams(
         kama_period=10,
-        lookback_period=80,
-        top_n=15,
+        lookback_period=40,
+        top_n=20,
         kama_buffer=0.025,
-        enable_regime_filter=True  # Default is True, but good to be explicit
+        enable_regime_filter=True   # Default is True, but good to be explicit
     )
     
     # 2. Prepare output directory

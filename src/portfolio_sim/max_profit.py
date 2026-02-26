@@ -42,6 +42,9 @@ MAX_PROFIT_SPACE: dict[str, dict] = {
     "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
     "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
     "enable_regime_filter": {"type": "categorical", "choices": [True, False]},
+    "enable_correlation_filter": {"type": "categorical", "choices": [True, False]},
+    "correlation_threshold": {"type": "float", "low": 0.5, "high": 0.95, "step": 0.05},
+    "correlation_lookback": {"type": "categorical", "choices": [30, 60, 90, 120]},
 }
 
 DEFAULT_MAX_PROFIT_TRIALS: int = 50
@@ -78,7 +81,7 @@ def compute_cagr_objective(
     Returns raw CAGR, or -999.0 for degenerate/rejected curves.
     """
     metrics = compute_metrics(equity)
-    if metrics["n_days"] < 60:
+    if metrics["n_days"] < 5:  # Relaxed from 60
         return -999.0
     if metrics["max_drawdown"] > max_dd_limit:
         return -999.0
@@ -92,7 +95,7 @@ def compute_cagr_objective(
 _MP_PARAM_KEYS = [
     "kama_period", "lookback_period", "top_n", "kama_buffer",
     "use_risk_adjusted", "enable_regime_filter", "sizing_mode",
-    "enable_correlation_filter",
+    "enable_correlation_filter", "correlation_threshold", "correlation_lookback",
 ]
 _MP_METRIC_KEYS = [
     "total_return", "cagr", "max_drawdown", "sharpe", "calmar",
@@ -100,7 +103,7 @@ _MP_METRIC_KEYS = [
 ]
 _MP_USER_ATTR_KEYS = _MP_METRIC_KEYS + [
     "use_risk_adjusted", "enable_regime_filter", "sizing_mode",
-    "enable_correlation_filter",
+    "enable_correlation_filter", "correlation_threshold", "correlation_lookback",
 ]
 
 
@@ -286,11 +289,13 @@ def format_max_profit_report(
         header = (
             f"  {'#':>3} {'kama':>5} {'lbk':>5} {'top_n':>5} {'buf':>7} "
             f"{'rsk_adj':>7} {'regime':>7} {'sizing':>12} "
+            f"{'corr':>5} {'c_thr':>6} "
             f"{'CAGR':>8} {'Return':>9} {'MaxDD':>8} {'Sharpe':>7}"
         )
         lines.append(header)
-        lines.append("  " + "-" * 86)
+        lines.append("  " + "-" * 100)
         for rank, (_, row) in enumerate(top.iterrows(), 1):
+            corr_flag = "Y" if row.get("enable_correlation_filter", False) else "N"
             lines.append(
                 f"  {rank:>3} {int(row['kama_period']):>5} "
                 f"{int(row['lookback_period']):>5} "
@@ -298,6 +303,7 @@ def format_max_profit_report(
                 f"{'Y' if row['use_risk_adjusted'] else 'N':>7} "
                 f"{'Y' if row['enable_regime_filter'] else 'N':>7} "
                 f"{row['sizing_mode']:>12} "
+                f"{corr_flag:>5} {row.get('correlation_threshold', 0):>6.2f} "
                 f"{row['cagr']:>8.2%} {row['total_return']:>9.2%} "
                 f"{row['max_drawdown']:>8.2%} {row['sharpe']:>7.2f}"
             )
@@ -340,7 +346,7 @@ def _compute_pareto_objectives(
     Returns (−inf, +inf) for degenerate/rejected curves.
     """
     metrics = compute_metrics(equity)
-    if metrics["n_days"] < 60 or metrics["cagr"] <= 0:
+    if metrics["n_days"] < 5 or metrics["cagr"] <= 0:  # Relaxed from 60
         return float("-inf"), float("inf")
     return metrics["cagr"], metrics["max_drawdown"]
 
@@ -561,15 +567,18 @@ def format_pareto_report(result: MaxProfitResult, top_n: int = 20) -> str:
 
             header = (
                 f"  {'#':>3} {'kama':>5} {'lbk':>5} {'top_n':>5} {'buf':>7} "
+                f"{'corr':>5} {'c_thr':>6} "
                 f"{'CAGR':>8} {'MaxDD':>8} {'Calmar':>8} {'Sharpe':>7}"
             )
             lines.append(header)
-            lines.append("  " + "-" * 70)
+            lines.append("  " + "-" * 82)
             for rank, (_, row) in enumerate(pf_display.iterrows(), 1):
+                corr_flag = "Y" if row.get("enable_correlation_filter", False) else "N"
                 lines.append(
                     f"  {rank:>3} {int(row['kama_period']):>5} "
                     f"{int(row['lookback_period']):>5} "
                     f"{int(row['top_n']):>5} {row['kama_buffer']:>7.4f} "
+                    f"{corr_flag:>5} {row.get('correlation_threshold', 0):>6.2f} "
                     f"{row['cagr']:>8.2%} {row['max_drawdown']:>8.2%} "
                     f"{row['calmar']:>8.2f} {row.get('sharpe', 0):>7.2f}"
                 )

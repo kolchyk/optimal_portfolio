@@ -175,7 +175,7 @@ def run_walk_forward(
 
         valid_oos = [
             t for t in tickers
-            if t in close_oos_warm.columns and len(close_oos_warm[t].dropna()) >= warmup
+            if t in close_oos_warm.columns and len(close_oos_warm[t].dropna()) >= 5
         ]
 
         oos_sim = run_simulation(
@@ -362,6 +362,9 @@ def format_wfo_report(result: WFOResult) -> str:
     lines.append(f"  lookback_period: {fp.lookback_period}")
     lines.append(f"  kama_buffer:     {fp.kama_buffer}")
     lines.append(f"  top_n:           {fp.top_n}")
+    lines.append(f"  enable_corr:     {fp.enable_correlation_filter}")
+    lines.append(f"  corr_threshold:  {fp.correlation_threshold}")
+    lines.append(f"  corr_lookback:   {fp.correlation_lookback}")
 
     lines.append("")
     lines.append("=" * 90)

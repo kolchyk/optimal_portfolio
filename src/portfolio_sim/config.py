@@ -46,7 +46,7 @@ ETF_UNIVERSE: list[str] = [
     "ARCO", "ABEV", "YUMC", "CPNG", "SEA", "TME", "LI", "NIO", "BEKE", "EDU",
 
     # US Sector & Thematic ETFs
-    "SPY", "QQQ", "XLK", "XLF", "XLE", "XLV", "XLI", "XLU", "XLY", "XLP",
+     "QQQ", "XLK", "XLF", "XLE", "XLV", "XLI", "XLU", "XLY", "XLP",
     "XLC", "XLB", "XLRE", "ITA", "VFH", "XRT", "VGT", "XLA", "XAR", "IBB", "SMH", "KBE",
 
     # International & Regional ETFs
@@ -94,7 +94,7 @@ ASSET_CLASS_MAP: dict[str, str] = {
     "TME": "EM Equity", "LI": "EM Equity", "NIO": "EM Equity", "BEKE": "EM Equity", "EDU": "EM Equity",
 
     # US Sector ETFs
-    "SPY": "US Equity", "QQQ": "US Equity", "XLK": "US Sector ETF", "XLF": "US Sector ETF", "XLE": "US Sector ETF", "XLV": "US Sector ETF", "XLI": "US Sector ETF",
+    "QQQ": "US Equity", "XLK": "US Sector ETF", "XLF": "US Sector ETF", "XLE": "US Sector ETF", "XLV": "US Sector ETF", "XLI": "US Sector ETF",
     "XLU": "US Sector ETF", "XLY": "US Sector ETF", "XLP": "US Sector ETF", "XLC": "US Sector ETF", "XLB": "US Sector ETF",
     "XLRE": "US Sector ETF", "ITA": "US Sector ETF", "VFH": "US Sector ETF", "XRT": "US Sector ETF", "VGT": "US Sector ETF",
     "XLA": "US Sector ETF", "XAR": "US Sector ETF", "IBB": "US Sector ETF", "SMH": "US Sector ETF", "KBE": "US Sector ETF",

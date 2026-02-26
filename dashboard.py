@@ -913,6 +913,8 @@ def _render_optimization_results() -> None:
                 st.subheader("Top 10 Combinations")
                 top = valid.nlargest(10, "objective")[
                     ["kama_period", "lookback_period", "kama_buffer", "top_n",
+                     "enable_correlation_filter", "correlation_threshold",
+                     "correlation_lookback",
                      "objective", "cagr", "max_drawdown", "sharpe"]
                 ].reset_index(drop=True)
                 top.index += 1
@@ -922,6 +924,7 @@ def _render_optimization_results() -> None:
                     "objective": "{:.4f}",
                     "sharpe": "{:.2f}",
                     "kama_buffer": "{:.3f}",
+                    "correlation_threshold": "{:.2f}",
                 }
                 st.dataframe(top.style.format(fmt), width="stretch")
 
@@ -1206,7 +1209,8 @@ def main():
                 f"Optimal: KAMA={best.kama_period}, "
                 f"Lookback={best.lookback_period}, "
                 f"Buffer={best.kama_buffer}, "
-                f"Top N={best.top_n}",
+                f"Top N={best.top_n}, "
+                f"Corr={best.enable_correlation_filter}",
                 icon="✅",
             )
             common_kwargs.update(
@@ -1214,6 +1218,9 @@ def main():
                 lookback_period=best.lookback_period,
                 top_n=best.top_n,
                 kama_buffer=best.kama_buffer,
+                enable_correlation_filter=best.enable_correlation_filter,
+                correlation_threshold=best.correlation_threshold,
+                correlation_lookback=best.correlation_lookback,
             )
         elif opt_mode != "None":
             st.warning("Optimization found no valid combinations. Using manual parameters.")

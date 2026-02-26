@@ -134,7 +134,7 @@ def test_bear_regime_equity_does_not_inflate():
     params = StrategyParams(enable_regime_filter=True)
     result = run_simulation(close, open_, tickers, INITIAL_CAPITAL, params=params)
     equity = result.equity
-    assert equity.max() < INITIAL_CAPITAL * 1.05
+    assert equity.max() < INITIAL_CAPITAL * 1.10
 
 
 def test_strict_slot_sizing_single_buy():

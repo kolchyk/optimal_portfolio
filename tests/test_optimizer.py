@@ -162,6 +162,9 @@ class TestMarginalProfiles:
             "lookback_period": [60, 90, 60, 90],
             "kama_buffer": [0.01, 0.01, 0.01, 0.01],
             "top_n": [20, 20, 20, 20],
+            "enable_correlation_filter": [False, False, False, False],
+            "correlation_threshold": [0.9, 0.9, 0.9, 0.9],
+            "correlation_lookback": [60, 60, 60, 60],
             "objective": [2.0, 4.0, 3.0, 3.0],
         })
         profiles = compute_marginal_profiles(grid_df)
@@ -179,6 +182,9 @@ class TestMarginalProfiles:
             "lookback_period": [60, 90, 60],
             "kama_buffer": [0.01, 0.01, 0.01],
             "top_n": [20, 20, 20],
+            "enable_correlation_filter": [False, False, False],
+            "correlation_threshold": [0.9, 0.9, 0.9],
+            "correlation_lookback": [60, 60, 60],
             "objective": [2.0, -999.0, 3.0],
         })
         profiles = compute_marginal_profiles(grid_df)
@@ -195,6 +201,9 @@ class TestMarginalProfiles:
             "lookback_period": [60, 60],
             "kama_buffer": [0.01, 0.01],
             "top_n": [20, 20],
+            "enable_correlation_filter": [False, False],
+            "correlation_threshold": [0.9, 0.9],
+            "correlation_lookback": [60, 60],
             "objective": [-999.0, -999.0],
         })
         profiles = compute_marginal_profiles(grid_df)
@@ -232,9 +241,29 @@ class TestRobustnessScores:
                 "std_objective": [0.1, 0.1, 0.1],
                 "count": [5, 5, 5],
             }),
+            "enable_correlation_filter": pd.DataFrame({
+                "enable_correlation_filter": [True, False],
+                "mean_objective": [3.0, 3.0],
+                "std_objective": [0.1, 0.1],
+                "count": [5, 5],
+            }),
+            "correlation_threshold": pd.DataFrame({
+                "correlation_threshold": [0.5, 0.7, 0.9],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
+            "correlation_lookback": pd.DataFrame({
+                "correlation_lookback": [30, 60, 90],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
         }
         scores = compute_robustness_scores(profiles)
-        for name in ["kama_period", "lookback_period", "kama_buffer", "top_n"]:
+        for name in ["kama_period", "lookback_period", "kama_buffer", "top_n",
+                      "enable_correlation_filter", "correlation_threshold",
+                      "correlation_lookback"]:
             assert scores[name] == pytest.approx(1.0)
 
     def test_peaked_profile_scores_low(self):
@@ -264,6 +293,24 @@ class TestRobustnessScores:
                 "std_objective": [0.1, 0.1, 0.1],
                 "count": [5, 5, 5],
             }),
+            "enable_correlation_filter": pd.DataFrame({
+                "enable_correlation_filter": [True, False],
+                "mean_objective": [3.0, 3.0],
+                "std_objective": [0.1, 0.1],
+                "count": [5, 5],
+            }),
+            "correlation_threshold": pd.DataFrame({
+                "correlation_threshold": [0.5, 0.7, 0.9],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
+            "correlation_lookback": pd.DataFrame({
+                "correlation_lookback": [30, 60, 90],
+                "mean_objective": [3.0, 3.0, 3.0],
+                "std_objective": [0.1, 0.1, 0.1],
+                "count": [5, 5, 5],
+            }),
         }
         scores = compute_robustness_scores(profiles)
         assert scores["kama_period"] < 0.5  # peaked, not robust
@@ -283,9 +330,20 @@ class TestRobustnessScores:
             "top_n": pd.DataFrame(
                 columns=["top_n", "mean_objective", "std_objective", "count"]
             ),
+            "enable_correlation_filter": pd.DataFrame(
+                columns=["enable_correlation_filter", "mean_objective", "std_objective", "count"]
+            ),
+            "correlation_threshold": pd.DataFrame(
+                columns=["correlation_threshold", "mean_objective", "std_objective", "count"]
+            ),
+            "correlation_lookback": pd.DataFrame(
+                columns=["correlation_lookback", "mean_objective", "std_objective", "count"]
+            ),
         }
         scores = compute_robustness_scores(profiles)
-        for name in ["kama_period", "lookback_period", "kama_buffer", "top_n"]:
+        for name in ["kama_period", "lookback_period", "kama_buffer", "top_n",
+                      "enable_correlation_filter", "correlation_threshold",
+                      "correlation_lookback"]:
             assert scores[name] == 0.0
 
 
@@ -299,6 +357,9 @@ class TestFormatSensitivityReport:
             "lookback_period": [60, 60],
             "kama_buffer": [0.01, 0.01],
             "top_n": [20, 20],
+            "enable_correlation_filter": [False, False],
+            "correlation_threshold": [0.9, 0.9],
+            "correlation_lookback": [60, 60],
             "objective": [2.0, 3.0],
             "cagr": [0.15, 0.20],
             "max_drawdown": [0.10, 0.08],

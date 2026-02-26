@@ -58,11 +58,17 @@ SENSITIVITY_SPACE: dict[str, dict] = {
     "lookback_period": {"type": "int", "low": 20, "high": 150, "step": 10},
     "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.001},
     "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
+    "enable_correlation_filter": {"type": "categorical", "choices": [True, False]},
+    "correlation_threshold": {"type": "float", "low": 0.5, "high": 0.95, "step": 0.05},
+    "correlation_lookback": {"type": "categorical", "choices": [30, 60, 90, 120]},
 }
 
 DEFAULT_N_TRIALS: int = 50
 
-PARAM_NAMES: list[str] = ["kama_period", "lookback_period", "kama_buffer", "top_n"]
+PARAM_NAMES: list[str] = [
+    "kama_period", "lookback_period", "kama_buffer", "top_n",
+    "enable_correlation_filter", "correlation_threshold", "correlation_lookback",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +179,10 @@ def _get_kama_periods_from_space(space: dict[str, dict]) -> list[int]:
 
 
 # Sensitivity param/metric keys for evaluate_combo
-_SENS_PARAM_KEYS = ["kama_period", "lookback_period", "kama_buffer", "top_n"]
+_SENS_PARAM_KEYS = [
+    "kama_period", "lookback_period", "kama_buffer", "top_n",
+    "enable_correlation_filter", "correlation_threshold", "correlation_lookback",
+]
 _SENS_METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]
 
 
@@ -190,16 +199,18 @@ def compute_marginal_profiles(
          "std_objective", "count"]}
     """
     profiles: dict[str, pd.DataFrame] = {}
+    # Only profile params that exist in the grid
+    param_names = [n for n in PARAM_NAMES if n in grid_df.columns]
     # Only consider valid results
     valid = grid_df[grid_df["objective"] > -999.0]
     if valid.empty:
-        for name in PARAM_NAMES:
+        for name in param_names:
             profiles[name] = pd.DataFrame(
                 columns=[name, "mean_objective", "std_objective", "count"]
             )
         return profiles
 
-    for name in PARAM_NAMES:
+    for name in param_names:
         agg = (
             valid.groupby(name)["objective"]
             .agg(["mean", "std", "count"])
@@ -221,7 +232,8 @@ def compute_robustness_scores(
     of that parameter (= robust). Low scores indicate sensitivity.
     """
     scores: dict[str, float] = {}
-    for name in PARAM_NAMES:
+    param_names = list(profiles.keys()) if profiles else PARAM_NAMES
+    for name in param_names:
         profile = profiles.get(name)
         if profile is None or profile.empty:
             scores[name] = 0.0
@@ -354,13 +366,20 @@ def run_sensitivity(
 
     grid_df = pd.DataFrame(rows)
 
-    # Compute base params objective
-    base_row = grid_df[
+    # Compute base params objective — match on all params present in grid
+    mask = (
         (grid_df["kama_period"] == base_params.kama_period)
         & (grid_df["lookback_period"] == base_params.lookback_period)
         & (grid_df["kama_buffer"] == base_params.kama_buffer)
         & (grid_df["top_n"] == base_params.top_n)
-    ]
+    )
+    if "enable_correlation_filter" in grid_df.columns:
+        mask = mask & (grid_df["enable_correlation_filter"] == base_params.enable_correlation_filter)
+    if "correlation_threshold" in grid_df.columns:
+        mask = mask & (grid_df["correlation_threshold"] == base_params.correlation_threshold)
+    if "correlation_lookback" in grid_df.columns:
+        mask = mask & (grid_df["correlation_lookback"] == base_params.correlation_lookback)
+    base_row = grid_df[mask]
     if not base_row.empty:
         base_objective = float(base_row.iloc[0]["objective"])
     else:
@@ -403,6 +422,9 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
     lines.append(f"  lookback_period: {bp.lookback_period}")
     lines.append(f"  kama_buffer:     {bp.kama_buffer}")
     lines.append(f"  top_n:           {bp.top_n}")
+    lines.append(f"  enable_corr:     {bp.enable_correlation_filter}")
+    lines.append(f"  corr_threshold:  {bp.correlation_threshold}")
+    lines.append(f"  corr_lookback:   {bp.correlation_lookback}")
     if not np.isnan(result.base_objective):
         lines.append(f"  base objective:  {result.base_objective:.4f}")
     else:
@@ -426,7 +448,8 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
     lines.append("Marginal Profiles (mean objective per parameter value):")
     lines.append("-" * 70)
 
-    for name in PARAM_NAMES:
+    profile_names = list(result.marginal_profiles.keys()) or PARAM_NAMES
+    for name in profile_names:
         profile = result.marginal_profiles.get(name)
         if profile is None or profile.empty:
             lines.append(f"\n  {name}: no valid data")
@@ -449,7 +472,8 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
     lines.append("Robustness Scores (1.0 = perfectly flat = robust):")
     lines.append("-" * 70)
 
-    for name in PARAM_NAMES:
+    score_names = list(result.robustness_scores.keys()) or PARAM_NAMES
+    for name in score_names:
         score = result.robustness_scores.get(name, 0.0)
         if score >= 0.8:
             verdict = "ROBUST"
@@ -467,12 +491,19 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
 
     if not valid.empty:
         top = valid.nlargest(10, "objective")
-        header = f"  {'kama':>5} {'lbk':>5} {'buf':>7} {'top_n':>5} {'obj':>8} {'cagr':>7} {'maxdd':>7} {'sharpe':>7}"
+        header = (
+            f"  {'kama':>5} {'lbk':>5} {'buf':>7} {'top_n':>5} "
+            f"{'corr':>5} {'c_thr':>6} {'c_lbk':>5} "
+            f"{'obj':>8} {'cagr':>7} {'maxdd':>7} {'sharpe':>7}"
+        )
         lines.append(header)
         for _, row in top.iterrows():
+            corr_flag = "Y" if row.get("enable_correlation_filter", False) else "N"
             lines.append(
                 f"  {int(row['kama_period']):>5} {int(row['lookback_period']):>5} "
                 f"{row['kama_buffer']:>7.4f} {int(row['top_n']):>5} "
+                f"{corr_flag:>5} {row.get('correlation_threshold', 0):>6.2f} "
+                f"{int(row.get('correlation_lookback', 0)):>5} "
                 f"{row['objective']:>8.4f} {row['cagr']:>7.2%} "
                 f"{row['max_drawdown']:>7.2%} {row['sharpe']:>7.2f}"
             )
@@ -502,9 +533,16 @@ def find_best_params(result: SensitivityResult) -> StrategyParams | None:
     if valid.empty:
         return None
     best = valid.loc[valid["objective"].idxmax()]
-    return StrategyParams(
-        kama_period=int(best["kama_period"]),
-        lookback_period=int(best["lookback_period"]),
-        kama_buffer=float(best["kama_buffer"]),
-        top_n=int(best["top_n"]),
-    )
+    kwargs: dict = {
+        "kama_period": int(best["kama_period"]),
+        "lookback_period": int(best["lookback_period"]),
+        "kama_buffer": float(best["kama_buffer"]),
+        "top_n": int(best["top_n"]),
+    }
+    if "enable_correlation_filter" in best.index:
+        kwargs["enable_correlation_filter"] = bool(best["enable_correlation_filter"])
+    if "correlation_threshold" in best.index:
+        kwargs["correlation_threshold"] = float(best["correlation_threshold"])
+    if "correlation_lookback" in best.index:
+        kwargs["correlation_lookback"] = int(best["correlation_lookback"])
+    return StrategyParams(**kwargs)

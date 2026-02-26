@@ -35,8 +35,8 @@ def test_compute_cagr_objective_rejected_dd():
 
 def test_compute_cagr_objective_rejected_short():
     """Too short equity should be rejected."""
-    dates = pd.date_range("2023-01-01", periods=10)
-    equity = pd.Series(np.linspace(100, 110, 10), index=dates)
+    dates = pd.date_range("2023-01-01", periods=3)
+    equity = pd.Series(np.linspace(100, 110, 3), index=dates)
     assert compute_cagr_objective(equity) == -999.0
 
 

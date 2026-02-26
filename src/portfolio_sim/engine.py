@@ -72,9 +72,12 @@ def run_simulation(
     # ------------------------------------------------------------------
     # 1. Determine simulation start (need warm-up for KAMA + lookback)
     # ------------------------------------------------------------------
+    # FIX: Remove the hard 150-row (warmup) restriction.
+    # If the provided data is too short, we start from the very first bar.
+    # Indicators will naturally stay empty until enough bars are accumulated.
     warmup = p.warmup
     if len(close_prices) <= warmup:
-        raise ValueError(f"Need at least {warmup} rows, got {len(close_prices)}")
+        warmup = 0
 
     sim_dates = close_prices.index[warmup:]
 
