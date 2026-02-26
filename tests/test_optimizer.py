@@ -84,15 +84,15 @@ class TestComputeObjective:
         )
         assert compute_objective(equity) == -999.0
 
-    def test_drawdown_floor_applied(self):
-        """Even with tiny drawdown, floor at 5% prevents inflated Calmar."""
+    def test_returns_total_return_value(self):
+        """Objective should return total_return for healthy equity curves."""
         equity = pd.Series(
             np.linspace(10000, 12000, 252),
             index=pd.bdate_range("2020-01-01", periods=252),
         )
         obj = compute_objective(equity)
-        # With 5% floor and ~20% return, Calmar should be reasonable
-        assert obj < 10
+        # ~20% total return
+        assert 0.15 < obj < 0.25
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +162,6 @@ class TestMarginalProfiles:
             "lookback_period": [60, 90, 60, 90],
             "kama_buffer": [0.01, 0.01, 0.01, 0.01],
             "top_n": [20, 20, 20, 20],
-            "enable_correlation_filter": [False, False, False, False],
-            "correlation_threshold": [0.9, 0.9, 0.9, 0.9],
             "objective": [2.0, 4.0, 3.0, 3.0],
         })
         profiles = compute_marginal_profiles(grid_df)
@@ -181,8 +179,6 @@ class TestMarginalProfiles:
             "lookback_period": [60, 90, 60],
             "kama_buffer": [0.01, 0.01, 0.01],
             "top_n": [20, 20, 20],
-            "enable_correlation_filter": [False, False, False],
-            "correlation_threshold": [0.9, 0.9, 0.9],
             "objective": [2.0, -999.0, 3.0],
         })
         profiles = compute_marginal_profiles(grid_df)
@@ -199,8 +195,6 @@ class TestMarginalProfiles:
             "lookback_period": [60, 60],
             "kama_buffer": [0.01, 0.01],
             "top_n": [20, 20],
-            "enable_correlation_filter": [False, False],
-            "correlation_threshold": [0.9, 0.9],
             "objective": [-999.0, -999.0],
         })
         profiles = compute_marginal_profiles(grid_df)
@@ -238,22 +232,9 @@ class TestRobustnessScores:
                 "std_objective": [0.1, 0.1, 0.1],
                 "count": [5, 5, 5],
             }),
-            "enable_correlation_filter": pd.DataFrame({
-                "enable_correlation_filter": [True, False],
-                "mean_objective": [3.0, 3.0],
-                "std_objective": [0.1, 0.1],
-                "count": [5, 5],
-            }),
-            "correlation_threshold": pd.DataFrame({
-                "correlation_threshold": [0.5, 0.7, 0.9],
-                "mean_objective": [3.0, 3.0, 3.0],
-                "std_objective": [0.1, 0.1, 0.1],
-                "count": [5, 5, 5],
-            }),
         }
         scores = compute_robustness_scores(profiles)
-        for name in ["kama_period", "lookback_period", "kama_buffer", "top_n",
-                      "enable_correlation_filter", "correlation_threshold"]:
+        for name in ["kama_period", "lookback_period", "kama_buffer", "top_n"]:
             assert scores[name] == pytest.approx(1.0)
 
     def test_peaked_profile_scores_low(self):
@@ -283,18 +264,6 @@ class TestRobustnessScores:
                 "std_objective": [0.1, 0.1, 0.1],
                 "count": [5, 5, 5],
             }),
-            "enable_correlation_filter": pd.DataFrame({
-                "enable_correlation_filter": [True, False],
-                "mean_objective": [3.0, 3.0],
-                "std_objective": [0.1, 0.1],
-                "count": [5, 5],
-            }),
-            "correlation_threshold": pd.DataFrame({
-                "correlation_threshold": [0.5, 0.7, 0.9],
-                "mean_objective": [3.0, 3.0, 3.0],
-                "std_objective": [0.1, 0.1, 0.1],
-                "count": [5, 5, 5],
-            }),
         }
         scores = compute_robustness_scores(profiles)
         assert scores["kama_period"] < 0.5  # peaked, not robust
@@ -314,16 +283,9 @@ class TestRobustnessScores:
             "top_n": pd.DataFrame(
                 columns=["top_n", "mean_objective", "std_objective", "count"]
             ),
-            "enable_correlation_filter": pd.DataFrame(
-                columns=["enable_correlation_filter", "mean_objective", "std_objective", "count"]
-            ),
-            "correlation_threshold": pd.DataFrame(
-                columns=["correlation_threshold", "mean_objective", "std_objective", "count"]
-            ),
         }
         scores = compute_robustness_scores(profiles)
-        for name in ["kama_period", "lookback_period", "kama_buffer", "top_n",
-                      "enable_correlation_filter", "correlation_threshold"]:
+        for name in ["kama_period", "lookback_period", "kama_buffer", "top_n"]:
             assert scores[name] == 0.0
 
 
@@ -337,8 +299,6 @@ class TestFormatSensitivityReport:
             "lookback_period": [60, 60],
             "kama_buffer": [0.01, 0.01],
             "top_n": [20, 20],
-            "enable_correlation_filter": [False, False],
-            "correlation_threshold": [0.9, 0.9],
             "objective": [2.0, 3.0],
             "cagr": [0.15, 0.20],
             "max_drawdown": [0.10, 0.08],
@@ -412,3 +372,28 @@ class TestRunSensitivity:
             n_workers=-1,
         )
         assert not np.isnan(result.base_objective)
+
+    def test_accepts_precomputed_kama_caches(
+        self, long_synthetic_prices, long_synthetic_open
+    ):
+        """run_sensitivity should skip precomputation when kama_caches is provided."""
+        tickers = [c for c in long_synthetic_prices.columns if c != "SPY"]
+        space = {
+            "kama_period": {"type": "categorical", "choices": [10, 20]},
+            "lookback_period": {"type": "int", "low": 60, "high": 60, "step": 1},
+            "kama_buffer": {"type": "float", "low": 0.01, "high": 0.01, "step": 0.01},
+            "top_n": {"type": "int", "low": 10, "high": 10, "step": 1},
+        }
+        kama_caches = precompute_kama_caches(long_synthetic_prices, tickers, [10, 20])
+        result = run_sensitivity(
+            long_synthetic_prices,
+            long_synthetic_open,
+            tickers,
+            initial_capital=10_000,
+            space=space,
+            n_trials=4,
+            n_workers=-1,
+            kama_caches=kama_caches,
+        )
+        assert isinstance(result, SensitivityResult)
+        assert len(result.grid_results) >= 2

@@ -67,6 +67,23 @@ def run_simulation(
                 )
 
     # ------------------------------------------------------------------
+    # 0b. Pre-compute vectorized alpha & volatility matrices
+    # ------------------------------------------------------------------
+    # Daily returns, rolling volatility, and momentum — computed once here,
+    # then looked up via O(1) .loc[date] inside the daily loop instead of
+    # recalculating pct_change() / std() for every ticker on every day.
+    _ticker_cols = [t for t in tickers if t in close_prices.columns]
+    _prices = close_prices[_ticker_cols]
+
+    returns_df = _prices.pct_change()
+    scoring_vol_df = returns_df.rolling(p.lookback_period, min_periods=5).std()
+    momentum_df = _prices / _prices.shift(p.lookback_period - 1) - 1.0
+
+    rp_vol_df = None
+    if p.sizing_mode == "risk_parity":
+        rp_vol_df = returns_df.rolling(p.volatility_lookback, min_periods=5).std()
+
+    # ------------------------------------------------------------------
     # 1. Determine simulation start (need warm-up for KAMA + lookback)
     # ------------------------------------------------------------------
     # FIX: Remove the hard 150-row (warmup) restriction.
@@ -163,11 +180,7 @@ def run_simulation(
                 if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
                     sells[t] = 0.0
 
-        # Get fresh candidates from alpha
-        idx_in_full = close_prices.index.get_loc(date)
-        start = max(0, idx_in_full - p.lookback_period + 1)
-        past_prices = close_prices.iloc[start : idx_in_full + 1][tickers]
-
+        # Get fresh candidates from alpha (using pre-computed matrices)
         kama_current: dict[str, float] = {}
         for t in tickers:
             if t in kama_cache:
@@ -179,12 +192,15 @@ def run_simulation(
                 if not np.isnan(val):
                     kama_current[t] = val
 
+        # Single-row DataFrame for the KAMA filter (Close > KAMA check)
+        prices_row = _prices.loc[[date]]
+
         candidates = get_buy_candidates(
-            past_prices, tickers, kama_current,
+            prices_row, tickers, kama_current,
             kama_buffer=p.kama_buffer, top_n=p.top_n,
             use_risk_adjusted=p.use_risk_adjusted,
-            correlation_threshold=p.correlation_threshold,
-            enable_correlation_filter=p.enable_correlation_filter,
+            precomputed_momentum=momentum_df.loc[date],
+            precomputed_vol=scoring_vol_df.loc[date],
         )
 
         # Build trade instructions
@@ -212,12 +228,19 @@ def run_simulation(
             if p.sizing_mode == "risk_parity":
                 buys_list = [t for t, v in new_trades.items() if v == 1.0]
                 if buys_list:
-                    vol_start = max(0, idx_in_full - p.volatility_lookback)
-                    vol_prices = close_prices.iloc[vol_start : idx_in_full + 1]
-                    pending_weights = _compute_inverse_vol_weights(
-                        buys_list, vol_prices, p.volatility_lookback,
-                        max_weight=p.max_weight,
-                    )
+                    if rp_vol_df is not None:
+                        pending_weights = _compute_inverse_vol_weights_fast(
+                            buys_list, rp_vol_df.loc[date],
+                            max_weight=p.max_weight,
+                        )
+                    else:
+                        idx_in_full = close_prices.index.get_loc(date)
+                        vol_start = max(0, idx_in_full - p.volatility_lookback)
+                        vol_prices = close_prices.iloc[vol_start : idx_in_full + 1]
+                        pending_weights = _compute_inverse_vol_weights(
+                            buys_list, vol_prices, p.volatility_lookback,
+                            max_weight=p.max_weight,
+                        )
 
     n = len(equity_values)
     idx = sim_dates[:n]
@@ -299,6 +322,38 @@ def _compute_inverse_vol_weights(
         if len(returns) < 5:
             continue
         vol = returns.std()
+        if vol > 1e-8:
+            inv_vols[t] = 1.0 / vol
+        else:
+            inv_vols[t] = 1.0  # near-zero vol: treat as equal weight
+
+    if not inv_vols:
+        return {t: 1.0 / len(tickers_to_buy) for t in tickers_to_buy}
+
+    total = sum(inv_vols.values())
+    weights = {t: v / total for t, v in inv_vols.items()}
+    return _cap_and_redistribute(weights, max_weight)
+
+
+def _compute_inverse_vol_weights_fast(
+    tickers_to_buy: list[str],
+    vol_row: pd.Series,
+    max_weight: float = 1.0,
+) -> dict[str, float]:
+    """Compute inverse-volatility weights from a pre-computed volatility row.
+
+    Same logic as ``_compute_inverse_vol_weights`` but avoids recomputing
+    ``pct_change`` and ``std`` from raw prices — uses a single row from a
+    pre-computed rolling-volatility DataFrame instead.
+    """
+    if not tickers_to_buy:
+        return {}
+
+    inv_vols: dict[str, float] = {}
+    for t in tickers_to_buy:
+        vol = vol_row.get(t, np.nan)
+        if np.isnan(vol):
+            continue
         if vol > 1e-8:
             inv_vols[t] = 1.0 / vol
         else:

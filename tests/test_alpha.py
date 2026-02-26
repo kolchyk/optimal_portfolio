@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from src.portfolio_sim.alpha import _greedy_correlation_filter, get_buy_candidates
+from src.portfolio_sim.alpha import get_buy_candidates
 from src.portfolio_sim.config import TOP_N
 
 
@@ -84,107 +84,3 @@ def test_ranked_descending_by_momentum(simple_prices, simple_tickers, kama_low):
 def test_empty_tickers_returns_empty(simple_prices, kama_low):
     result = get_buy_candidates(simple_prices, [], kama_low)
     assert result == []
-
-
-# ---------------------------------------------------------------------------
-# Correlation filter tests
-# ---------------------------------------------------------------------------
-def test_correlation_filter_removes_correlated():
-    """Highly correlated tickers should be filtered out by greedy algorithm."""
-    np.random.seed(42)
-    n_days = 100
-    dates = pd.bdate_range("2023-01-02", periods=n_days)
-
-    base = np.cumsum(np.random.normal(0, 0.01, n_days))
-    data = {
-        "A": 100 * np.exp(base),
-        "B": 100 * np.exp(base + np.random.normal(0, 0.001, n_days)),  # ~perfectly correlated with A
-        "C": 100 * np.exp(np.cumsum(np.random.normal(0, 0.02, n_days))),  # uncorrelated
-    }
-    prices = pd.DataFrame(data, index=dates)
-
-    result = _greedy_correlation_filter(
-        ranked_tickers=["A", "B", "C"],
-        prices_window=prices,
-        top_n=3,
-        correlation_threshold=0.65,
-    )
-    assert "A" in result, "First ranked ticker should always be selected"
-    assert "B" not in result, "B is too correlated with A and should be skipped"
-    assert "C" in result, "C is uncorrelated and should be selected"
-
-
-def test_correlation_filter_all_uncorrelated():
-    """When all tickers are uncorrelated, all should be selected up to top_n."""
-    np.random.seed(42)
-    n_days = 100
-    dates = pd.bdate_range("2023-01-02", periods=n_days)
-
-    data = {}
-    for i in range(4):
-        data[f"T{i}"] = 100 * np.exp(np.cumsum(np.random.normal(0, 0.02, n_days)))
-    prices = pd.DataFrame(data, index=dates)
-
-    result = _greedy_correlation_filter(
-        ranked_tickers=["T0", "T1", "T2", "T3"],
-        prices_window=prices,
-        top_n=4,
-        correlation_threshold=0.65,
-    )
-    assert len(result) == 4
-
-
-def test_correlation_filter_respects_top_n():
-    """Never return more than top_n tickers."""
-    np.random.seed(42)
-    n_days = 100
-    dates = pd.bdate_range("2023-01-02", periods=n_days)
-
-    data = {}
-    for i in range(5):
-        data[f"T{i}"] = 100 * np.exp(np.cumsum(np.random.normal(0, 0.02, n_days)))
-    prices = pd.DataFrame(data, index=dates)
-
-    result = _greedy_correlation_filter(
-        ranked_tickers=["T0", "T1", "T2", "T3", "T4"],
-        prices_window=prices,
-        top_n=2,
-        correlation_threshold=0.99,
-    )
-    assert len(result) <= 2
-
-
-def test_correlation_filter_empty_input():
-    """Empty ranked_tickers returns empty list."""
-    prices = pd.DataFrame()
-    result = _greedy_correlation_filter(
-        [], prices, top_n=5, correlation_threshold=0.65,
-    )
-    assert result == []
-
-
-def test_correlation_filter_insufficient_data_falls_back():
-    """When less than 10 rows of return data, filter is skipped (fallback to top_n)."""
-    dates = pd.bdate_range("2023-01-02", periods=5)
-    data = {"A": [100, 101, 102, 103, 104], "B": [100, 99, 98, 97, 96]}
-    prices = pd.DataFrame(data, index=dates)
-
-    result = _greedy_correlation_filter(
-        ranked_tickers=["A", "B"],
-        prices_window=prices,
-        top_n=2,
-        correlation_threshold=0.1,  # very strict — would filter everything if data existed
-    )
-    assert result == ["A", "B"], "Should fall back to top_n slice when insufficient data"
-
-
-def test_correlation_filter_disabled_matches_original(simple_prices, simple_tickers, kama_low):
-    """With enable_correlation_filter=False, output matches original behavior."""
-    result_original = get_buy_candidates(
-        simple_prices, simple_tickers, kama_low, enable_correlation_filter=False,
-    )
-    result_disabled = get_buy_candidates(
-        simple_prices, simple_tickers, kama_low, enable_correlation_filter=False,
-        correlation_threshold=0.1,
-    )
-    assert result_original == result_disabled

@@ -10,15 +10,34 @@ Cache behavior:
   - Use refresh=True to force re-download and overwrite cache.
 """
 
+import re
+from datetime import datetime, timedelta
+
 import pandas as pd
 import structlog
 import yfinance as yf
-from pathlib import Path
 from tqdm import tqdm
 
 from src.portfolio_sim.config import CACHE_DIR, ETF_UNIVERSE, SPY_TICKER
 
 log = structlog.get_logger(__name__)
+
+
+def _period_to_start_date(period: str) -> datetime | None:
+    """Convert yfinance-style period ('2y', '5y', '6mo', etc.) to start date.
+    Returns None for max/all (e.g. 'max')."""
+    m = re.match(r"^(\d+)(d|mo|y)$", period.strip().lower())
+    if not m:
+        return None
+    n, unit = int(m.group(1)), m.group(2)
+    today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+    if unit == "d":
+        return today - timedelta(days=n)
+    if unit == "mo":
+        return today - timedelta(days=n * 31)
+    if unit == "y":
+        return today - timedelta(days=n * 365)
+    return None
 
 CLOSE_CACHE = CACHE_DIR / "close_prices.parquet"
 OPEN_CACHE = CACHE_DIR / "open_prices.parquet"
@@ -72,8 +91,31 @@ def fetch_price_data(
                 period=period,
             )
         else:
-            log.info("Loading prices from Parquet cache (skip download)", suffix=cache_suffix)
-            return close_df, open_df
+            start_date = _period_to_start_date(period)
+            if start_date is not None:
+                start_ts = pd.Timestamp(start_date)
+                close_df = close_df.loc[close_df.index >= start_ts]
+                open_df = open_df.loc[open_df.index >= start_ts]
+                if min_rows and len(close_df) < min_rows:
+                    log.warning(
+                        "Cache has insufficient rows after period trim, re-downloading",
+                        trimmed_rows=len(close_df),
+                        min_rows=min_rows,
+                        period=period,
+                    )
+                else:
+                    log.info(
+                        "Loading prices from Parquet cache (trimmed to period)",
+                        suffix=cache_suffix,
+                        period=period,
+                        rows=len(close_df),
+                    )
+                    return close_df, open_df
+            else:
+                log.info("Loading prices from Parquet cache (skip download)", suffix=cache_suffix)
+                return close_df, open_df
+
+        # Fall through to re-download when trim left too few rows
 
     full_list = list(set(tickers + [SPY_TICKER]))
     log.info("Downloading prices via yfinance", n_tickers=len(full_list), period=period)

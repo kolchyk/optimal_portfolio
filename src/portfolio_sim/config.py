@@ -16,10 +16,10 @@ RISK_FREE_RATE: float = 0.04
 # ---------------------------------------------------------------------------
 # Strategy parameters — concentrated momentum (4x S&P 500 target)
 # ---------------------------------------------------------------------------
-KAMA_PERIOD: int = 20
-LOOKBACK_PERIOD: int = 60  # Центр надежного плато
-TOP_N: int = 10
-KAMA_BUFFER: float = 0.024  # Отступили от пика 0.025 на широкое плечо
+KAMA_PERIOD: int = 30
+LOOKBACK_PERIOD: int = 20
+TOP_N: int = 5
+KAMA_BUFFER: float = 0.005
 
 # ---------------------------------------------------------------------------
 # Tickers
@@ -128,11 +128,6 @@ ASSET_CLASS_MAP: dict[str, str] = {
 }
 
 # ---------------------------------------------------------------------------
-# Correlation filter (greedy diversification)
-# ---------------------------------------------------------------------------
-CORRELATION_THRESHOLD: float = 0.9
-
-# ---------------------------------------------------------------------------
 # Position sizing
 # ---------------------------------------------------------------------------
 VOLATILITY_LOOKBACK: int = 20  # trading days for inverse-vol weighting
@@ -150,10 +145,8 @@ CACHE_DIR: Path = DEFAULT_OUTPUT_DIR / "cache"
 SENSITIVITY_SPACE = {
     "kama_period": {"type": "categorical", "choices": [10, 20, 30, 40]},
     "lookback_period": {"type": "int", "low": 20, "high": 100, "step": 20},
-    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.05},
+    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
     "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
-    "enable_correlation_filter": {"type": "categorical", "choices": [True, False]},
-    "correlation_threshold": {"type": "float", "low": 0.6, "high": 0.9, "step": 0.05},
 }
 
 MAX_PROFIT_SPACE = {
@@ -161,9 +154,16 @@ MAX_PROFIT_SPACE = {
     "lookback_period": {"type": "int", "low": 20, "high": 100, "step": 20},
     "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
     "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
-    "enable_correlation_filter": {"type": "categorical", "choices": [True, False]},
-    "correlation_threshold": {"type": "float", "low": 0.5, "high": 0.95, "step": 0.05},
 }
 
 DEFAULT_N_TRIALS: int = 50
 DEFAULT_MAX_PROFIT_TRIALS: int = 50
+
+# ---------------------------------------------------------------------------
+# WFO schedule grid search (legacy fixed space; the default is now
+# computed adaptively by walk_forward.build_adaptive_schedule_space)
+# ---------------------------------------------------------------------------
+WFO_SCHEDULE_SPACE = {
+    "min_is_days": {"type": "int", "low": 20, "high": 100, "step": 20},
+    "oos_days": {"type": "int", "low": 10, "high": 40, "step": 10},
+}

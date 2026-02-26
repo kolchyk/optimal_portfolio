@@ -1,4 +1,4 @@
-"""Maximum profit parameter search (TPE or Pareto NSGA-II)."""
+"""Maximum profit parameter search (TPE)."""
 
 from src.portfolio_sim.cli_utils import (
     create_output_dir,
@@ -10,10 +10,7 @@ from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.engine import run_simulation
 from src.portfolio_sim.max_profit import (
     format_max_profit_report,
-    format_pareto_report,
-    run_max_profit_pareto,
     run_max_profit_search,
-    select_best_from_pareto,
     select_best_from_search,
 )
 from src.portfolio_sim.params import StrategyParams
@@ -28,7 +25,7 @@ COMMAND_NAME = "max-profit"
 
 def register(subparsers) -> None:
     p = subparsers.add_parser(
-        COMMAND_NAME, help="Maximum profit parameter search (TPE or Pareto NSGA-II)",
+        COMMAND_NAME, help="Maximum profit parameter search (TPE)",
     )
     p.add_argument(
         "--refresh", action="store_true",
@@ -49,10 +46,6 @@ def register(subparsers) -> None:
     p.add_argument(
         "--n-trials", type=int, default=50,
         help="Number of Optuna trials per universe (default: 50)",
-    )
-    p.add_argument(
-        "--pareto", action="store_true",
-        help="Use multi-objective Pareto search (NSGA-II) instead of single-objective TPE",
     )
 
 
@@ -108,7 +101,6 @@ def run(args) -> None:
 
     etf_params = StrategyParams(
         use_risk_adjusted=True,
-        enable_correlation_filter=True,
         sizing_mode="risk_parity",
     )
     min_days = etf_params.warmup * 2
@@ -122,56 +114,26 @@ def run(args) -> None:
     )
 
     fixed = {
-        "enable_correlation_filter": True,
-        "correlation_threshold": 0.65,
         "use_risk_adjusted": True,
         "sizing_mode": "risk_parity",
     }
 
-    best_params = None
+    print(f"\n{'=' * 70}")
+    print(f"OPTUNA SEARCH — Cross-Asset ETF ({args.n_trials} trials)")
+    print(f"{'=' * 70}\n")
 
-    if args.pareto:
-        print(f"\n{'=' * 70}")
-        print(f"PARETO SEARCH (NSGA-II) — Cross-Asset ETF ({args.n_trials} trials)")
-        print(f"{'=' * 70}\n")
+    etf_result = run_max_profit_search(
+        close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
+        universe="etf",
+        default_params=etf_params,
+        fixed_params=fixed,
+        n_trials=args.n_trials,
+        n_workers=args.n_workers,
+        max_dd_limit=args.max_dd,
+    )
 
-        etf_result = run_max_profit_pareto(
-            close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
-            universe="etf",
-            default_params=etf_params,
-            fixed_params=fixed,
-            n_trials=args.n_trials,
-            n_workers=args.n_workers,
-        )
-
-        report_etf = format_pareto_report(etf_result)
-        best_params = select_best_from_pareto(etf_result)
-        if best_params:
-            print(f"\nBest from Pareto front (by Calmar):")
-            print(f"  kama={best_params.kama_period}, lookback={best_params.lookback_period}, "
-                  f"buffer={best_params.kama_buffer}, top_n={best_params.top_n}")
-
-        if etf_result.pareto_front is not None:
-            pareto_path = output_dir / "pareto_front_etf.csv"
-            etf_result.pareto_front.to_csv(pareto_path, index=False)
-            print(f"Pareto front saved to {pareto_path}")
-    else:
-        print(f"\n{'=' * 70}")
-        print(f"OPTUNA SEARCH — Cross-Asset ETF ({args.n_trials} trials)")
-        print(f"{'=' * 70}\n")
-
-        etf_result = run_max_profit_search(
-            close_etf, open_etf, valid_etf, INITIAL_CAPITAL,
-            universe="etf",
-            default_params=etf_params,
-            fixed_params=fixed,
-            n_trials=args.n_trials,
-            n_workers=args.n_workers,
-            max_dd_limit=args.max_dd,
-        )
-
-        report_etf = format_max_profit_report(etf_result)
-        best_params = select_best_from_search(etf_result)
+    report_etf = format_max_profit_report(etf_result)
+    best_params = select_best_from_search(etf_result)
 
     print(f"\n{report_etf}")
 

@@ -39,28 +39,47 @@ def init_eval_worker(
 
 
 def evaluate_combo(
-    args: tuple[StrategyParams, float, Callable, str, list[str], list[str]],
+    args: tuple,
 ) -> dict:
-    """Evaluate a single param combo on the full dataset.
+    """Evaluate a single param combo, optionally on a date-sliced subset.
 
     Args:
         args: Tuple of (params, max_dd_limit, objective_fn, objective_key,
-              param_keys, metric_keys).
+              param_keys, metric_keys) or
+              (params, max_dd_limit, objective_fn, objective_key,
+              param_keys, metric_keys, slice_spec).
+
             - params: strategy parameters to evaluate
             - max_dd_limit: passed to the objective function
             - objective_fn: callable(equity, max_dd_limit) -> float
             - objective_key: key name for the objective value in result dict
             - param_keys: param attribute names to include in result
             - metric_keys: metric dict keys to include in result
+            - slice_spec (optional): dict with "is_start", "is_end",
+              "tickers" — workers slice shared data to the given range
 
     Returns:
         Dict with parameter values, objective, and requested metrics.
     """
-    params, max_dd_limit, objective_fn, objective_key, param_keys, metric_keys = args
+    if len(args) == 7:
+        params, max_dd_limit, objective_fn, objective_key, param_keys, metric_keys, slice_spec = args
+    else:
+        params, max_dd_limit, objective_fn, objective_key, param_keys, metric_keys = args
+        slice_spec = None
+
     try:
+        close = _shared["close"]
+        open_ = _shared["open"]
+        tickers = _shared["tickers"]
+
+        if slice_spec is not None:
+            close = close.loc[slice_spec["is_start"]:slice_spec["is_end"]]
+            open_ = open_.loc[slice_spec["is_start"]:slice_spec["is_end"]]
+            tickers = slice_spec["tickers"]
+
         kama_cache = _shared["kama_caches"].get(params.kama_period)
         result = run_simulation(
-            _shared["close"], _shared["open"], _shared["tickers"],
+            close, open_, tickers,
             _shared["capital"], params=params, kama_cache=kama_cache,
         )
         equity = result.equity

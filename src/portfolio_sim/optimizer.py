@@ -60,7 +60,6 @@ def _clamp_to_space(value, spec: dict):
 # ---------------------------------------------------------------------------
 PARAM_NAMES: list[str] = [
     "kama_period", "lookback_period", "kama_buffer", "top_n",
-    "enable_correlation_filter", "correlation_threshold",
 ]
 
 
@@ -89,22 +88,21 @@ def compute_objective(
     max_dd_limit: float = 0.30,
     min_n_days: int = 60,
 ) -> float:
-    """Calmar ratio with drawdown floor and hard rejection.
+    """Total return with drawdown cap and hard rejection.
 
     Returns:
-        Calmar ratio (CAGR / max(MaxDD, 5%)), or -999.0 when MaxDD
+        Total return (e.g. 0.50 for +50%), or -999.0 when MaxDD
         exceeds *max_dd_limit* or the equity curve is degenerate.
     """
     metrics = compute_metrics(equity)
     if metrics["n_days"] < min_n_days:
         return -999.0
-    max_dd = max(metrics["max_drawdown"], 0.05)  # floor at 5%
-    if max_dd > max_dd_limit:
+    if metrics["max_drawdown"] > max_dd_limit:
         return -999.0
-    cagr = metrics["cagr"]
-    if cagr <= 0:
+    total_return = metrics["total_return"]
+    if total_return <= 0:
         return -999.0
-    return cagr / max_dd
+    return total_return
 
 
 # ---------------------------------------------------------------------------
@@ -136,7 +134,7 @@ def precompute_kama_caches(
     all_tickers = [t for t in set(tickers + [SPY_TICKER]) if t in close_prices.columns]
     unique_periods = sorted(set(kama_periods))
     if not n_workers or n_workers < 1:
-        n_workers = max(1, os.cpu_count() - 1)
+        n_workers = os.cpu_count()
 
     # Build all (period, ticker) tasks
     tasks = [(p, t) for p in unique_periods for t in all_tickers]
@@ -171,7 +169,6 @@ def _get_kama_periods_from_space(space: dict[str, dict]) -> list[int]:
 # Sensitivity param/metric keys for evaluate_combo
 _SENS_PARAM_KEYS = [
     "kama_period", "lookback_period", "kama_buffer", "top_n",
-    "enable_correlation_filter", "correlation_threshold",
 ]
 _SENS_METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]
 
@@ -256,6 +253,8 @@ def run_sensitivity(
     n_workers: int | None = None,
     max_dd_limit: float = 0.30,
     min_n_days: int = 60,
+    kama_caches: dict[int, dict[str, pd.Series]] | None = None,
+    executor: ProcessPoolExecutor | None = None,
 ) -> SensitivityResult:
     """Run parameter sensitivity analysis using Optuna TPE sampler.
 
@@ -267,11 +266,16 @@ def run_sensitivity(
 
     This is NOT optimization — the goal is to verify that performance
     is stable across parameter values, not to find the "best" combo.
+
+    When *kama_caches* is provided, KAMA pre-computation is skipped.
+    When *executor* is provided, a shared ProcessPoolExecutor is reused
+    instead of creating a new one (workers must hold full-range data;
+    per-step slicing is handled via slice_spec in evaluate_combo).
     """
     base_params = base_params or StrategyParams()
     space = space or SENSITIVITY_SPACE
     if not n_workers or n_workers < 1:
-        n_workers = max(1, os.cpu_count() - 1)
+        n_workers = os.cpu_count()
 
     log.info(
         "sensitivity_start",
@@ -279,10 +283,11 @@ def run_sensitivity(
         n_workers=n_workers,
     )
 
-    # Pre-compute KAMA for all possible kama_period values
-    kama_periods = _get_kama_periods_from_space(space)
-    kama_caches = precompute_kama_caches(close_prices, tickers, kama_periods, n_workers)
-    log.info("kama_precomputed", n_periods=len(kama_caches))
+    # Pre-compute KAMA for all possible kama_period values (skip if provided)
+    if kama_caches is None:
+        kama_periods = _get_kama_periods_from_space(space)
+        kama_caches = precompute_kama_caches(close_prices, tickers, kama_periods, n_workers)
+        log.info("kama_precomputed", n_periods=len(kama_caches))
 
     optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -303,14 +308,27 @@ def run_sensitivity(
     # module reloads (prevents PicklingError with ProcessPoolExecutor).
     from src.portfolio_sim.parallel import evaluate_combo, init_eval_worker
 
-    # Use ask/tell API with batch parallelism via ProcessPoolExecutor.
-    # This avoids the overhead of Optuna's internal threading (n_jobs)
-    # while keeping full process-level parallelism for CPU-bound simulations.
-    executor = ProcessPoolExecutor(
-        max_workers=n_workers,
-        initializer=init_eval_worker,
-        initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
-    )
+    # Determine whether we own the executor (and must shut it down).
+    own_executor = executor is None
+
+    if own_executor:
+        # Use ask/tell API with batch parallelism via ProcessPoolExecutor.
+        # This avoids the overhead of Optuna's internal threading (n_jobs)
+        # while keeping full process-level parallelism for CPU-bound simulations.
+        executor = ProcessPoolExecutor(
+            max_workers=n_workers,
+            initializer=init_eval_worker,
+            initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
+        )
+        slice_spec = None  # workers already hold the correct data
+    else:
+        # External executor holds full-range data; build slice_spec so
+        # workers slice to the date range and tickers for this call.
+        slice_spec = {
+            "is_start": close_prices.index[0],
+            "is_end": close_prices.index[-1],
+            "tickers": list(tickers),
+        }
 
     objective_fn = partial(compute_objective, min_n_days=min_n_days)
 
@@ -322,11 +340,15 @@ def run_sensitivity(
         trials = [study.ask() for _ in range(batch_size)]
         params_list = [suggest_params(t, space) for t in trials]
 
+        combo_base = lambda p: (
+            p, max_dd_limit, objective_fn, "objective",
+            _SENS_PARAM_KEYS, _SENS_METRIC_KEYS,
+        )
+
         futures = {
             executor.submit(
                 evaluate_combo,
-                (p, max_dd_limit, objective_fn, "objective",
-                 _SENS_PARAM_KEYS, _SENS_METRIC_KEYS),
+                combo_base(p) if slice_spec is None else combo_base(p) + (slice_spec,),
             ): (t, p)
             for t, p in zip(trials, params_list)
         }
@@ -342,7 +364,8 @@ def run_sensitivity(
             trials_done += 1
 
     pbar.close()
-    executor.shutdown(wait=True)
+    if own_executor:
+        executor.shutdown(wait=True)
 
     # Extract results into DataFrame
     rows: list[dict] = []
@@ -363,10 +386,6 @@ def run_sensitivity(
         & (grid_df["kama_buffer"] == base_params.kama_buffer)
         & (grid_df["top_n"] == base_params.top_n)
     )
-    if "enable_correlation_filter" in grid_df.columns:
-        mask = mask & (grid_df["enable_correlation_filter"] == base_params.enable_correlation_filter)
-    if "correlation_threshold" in grid_df.columns:
-        mask = mask & (grid_df["correlation_threshold"] == base_params.correlation_threshold)
     base_row = grid_df[mask]
     if not base_row.empty:
         base_objective = float(base_row.iloc[0]["objective"])
@@ -410,8 +429,6 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
     lines.append(f"  lookback_period: {bp.lookback_period}")
     lines.append(f"  kama_buffer:     {bp.kama_buffer}")
     lines.append(f"  top_n:           {bp.top_n}")
-    lines.append(f"  enable_corr:     {bp.enable_correlation_filter}")
-    lines.append(f"  corr_threshold:  {bp.correlation_threshold}")
     if not np.isnan(result.base_objective):
         lines.append(f"  base objective:  {result.base_objective:.4f}")
     else:
@@ -480,16 +497,13 @@ def format_sensitivity_report(result: SensitivityResult) -> str:
         top = valid.nlargest(10, "objective")
         header = (
             f"  {'kama':>5} {'lbk':>5} {'buf':>7} {'top_n':>5} "
-            f"{'corr':>5} {'c_thr':>6} "
             f"{'obj':>8} {'cagr':>7} {'maxdd':>7} {'sharpe':>7}"
         )
         lines.append(header)
         for _, row in top.iterrows():
-            corr_flag = "Y" if row.get("enable_correlation_filter", False) else "N"
             lines.append(
                 f"  {int(row['kama_period']):>5} {int(row['lookback_period']):>5} "
                 f"{row['kama_buffer']:>7.4f} {int(row['top_n']):>5} "
-                f"{corr_flag:>5} {row.get('correlation_threshold', 0):>6.2f} "
                 f"{row['objective']:>8.4f} {row['cagr']:>7.2%} "
                 f"{row['max_drawdown']:>7.2%} {row['sharpe']:>7.2f}"
             )
@@ -525,8 +539,4 @@ def find_best_params(result: SensitivityResult) -> StrategyParams | None:
         "kama_buffer": float(best["kama_buffer"]),
         "top_n": int(best["top_n"]),
     }
-    if "enable_correlation_filter" in best.index:
-        kwargs["enable_correlation_filter"] = bool(best["enable_correlation_filter"])
-    if "correlation_threshold" in best.index:
-        kwargs["correlation_threshold"] = float(best["correlation_threshold"])
     return StrategyParams(**kwargs)

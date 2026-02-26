@@ -47,3 +47,22 @@ class WFOResult:
     stitched_spy_equity: pd.Series  # concatenated SPY equity for same OOS periods
     oos_metrics: dict  # metrics computed on stitched OOS equity
     final_params: StrategyParams  # params from the last IS window (for live use)
+
+
+@dataclass
+class WFOGridEntry:
+    """One (min_is_days, oos_days) combination in schedule grid search."""
+
+    min_is_days: int
+    oos_days: int
+    wfo_result: WFOResult
+    oos_calmar: float
+
+
+@dataclass
+class WFOGridResult:
+    """Grid search over WFO schedule parameters."""
+
+    entries: list[WFOGridEntry]
+    best_entry: WFOGridEntry
+    summary: pd.DataFrame  # rows = combos, cols = min_is_days, oos_days, calmar, cagr, maxdd

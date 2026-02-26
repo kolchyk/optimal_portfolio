@@ -6,6 +6,7 @@ import pytest
 
 from src.portfolio_sim.models import WFOResult, WFOStep
 from src.portfolio_sim.params import StrategyParams
+from src.portfolio_sim.optimizer import precompute_kama_caches
 from src.portfolio_sim.walk_forward import (
     _stitch_equity_curves,
     format_wfo_report,
@@ -247,6 +248,33 @@ class TestRunWalkForward:
         for step in result.steps:
             assert step.oos_equity.index[0] >= step.oos_start
             assert step.oos_equity.index[-1] <= step.oos_end
+
+    def test_accepts_precomputed_kama_caches(
+        self, long_synthetic_prices, long_synthetic_open
+    ):
+        """run_walk_forward should use provided kama_caches without recomputing."""
+        tickers = [c for c in long_synthetic_prices.columns if c != "SPY"]
+        space = {
+            "kama_period": {"type": "categorical", "choices": [10, 20]},
+            "lookback_period": {"type": "int", "low": 60, "high": 60, "step": 1},
+            "kama_buffer": {"type": "float", "low": 0.01, "high": 0.01, "step": 0.01},
+            "top_n": {"type": "int", "low": 5, "high": 5, "step": 1},
+        }
+        kama_caches = precompute_kama_caches(long_synthetic_prices, tickers, [10, 20])
+        result = run_walk_forward(
+            long_synthetic_prices,
+            long_synthetic_open,
+            tickers,
+            initial_capital=10_000,
+            space=space,
+            n_trials_per_step=4,
+            n_workers=-1,
+            min_is_days=756,
+            oos_days=252,
+            kama_caches=kama_caches,
+        )
+        assert isinstance(result, WFOResult)
+        assert len(result.steps) >= 1
 
 
 # ---------------------------------------------------------------------------

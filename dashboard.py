@@ -14,8 +14,6 @@ import structlog
 
 from src.portfolio_sim.cli_utils import filter_valid_tickers
 from src.portfolio_sim.config import (
-    CORRELATION_LOOKBACK,
-    CORRELATION_THRESHOLD,
     INITIAL_CAPITAL,
     KAMA_BUFFER,
     KAMA_PERIOD,
@@ -718,7 +716,7 @@ def _render_sidebar() -> dict:
             optimize_mode = st.selectbox(
                 "Режим оптимизации",
                 ["None", "Sensitivity Analysis", "Max Profit (TPE)",
-                 "Max Profit (Pareto)", "Walk-Forward"],
+                 "Walk-Forward"],
                 help="Метод поиска параметров перед бэктестом"
             )
 
@@ -799,19 +797,6 @@ def _render_sidebar() -> dict:
 
         # --- Группа 3: Расширенные настройки ---
         with st.expander("⚙️ Расширенные настройки", expanded=False):
-            enable_correlation = st.toggle(
-                "Фильтр корреляции",
-                value=is_etf_mode,
-                help="Жадная диверсификация: пропускать активы, слишком коррелированные с корзиной.",
-            )
-            corr_threshold = CORRELATION_THRESHOLD
-            if enable_correlation:
-                corr_threshold = st.slider(
-                    "Макс. корреляция", min_value=0.3, max_value=0.95,
-                    value=CORRELATION_THRESHOLD, step=0.05,
-                    help="Порог для парной корреляции"
-                )
-
             sizing_options = ["Equal Weight", "Risk Parity (Inverse Vol)"]
             sizing_choice = st.radio(
                 "Метод определения весов",
@@ -850,8 +835,6 @@ def _render_sidebar() -> dict:
         "lookback_period": lookback_period,
         "kama_buffer": kama_buffer,
         "use_risk_adjusted": use_risk_adjusted,
-        "enable_correlation": enable_correlation,
-        "corr_threshold": corr_threshold,
         "sizing_mode": sizing_mode,
         "vol_lookback": vol_lookback,
         "max_weight": max_weight,
@@ -886,7 +869,6 @@ def _render_optimization_results() -> None:
                 st.subheader("Top 10 Combinations")
                 top = valid.nlargest(10, "objective")[
                     ["kama_period", "lookback_period", "kama_buffer", "top_n",
-                     "enable_correlation_filter", "correlation_threshold",
                      "objective", "cagr", "max_drawdown", "sharpe"]
                 ].reset_index(drop=True)
                 top.index += 1
@@ -896,7 +878,6 @@ def _render_optimization_results() -> None:
                     "objective": "{:.4f}",
                     "sharpe": "{:.2f}",
                     "kama_buffer": "{:.3f}",
-                    "correlation_threshold": "{:.2f}",
                 }
                 st.dataframe(top.style.format(fmt), width="stretch")
 
@@ -920,45 +901,6 @@ def _render_optimization_results() -> None:
                 st.dataframe(top.style.format(
                     {k: v for k, v in fmt.items() if k in existing}
                 ), width="stretch")
-
-    elif kind == "max_profit_pareto":
-        with st.expander("Pareto Front (NSGA-II) Results", expanded=False):
-            pf = data.pareto_front
-            if pf is not None and not pf.empty:
-                st.caption(f"{len(pf)} non-dominated solutions")
-
-                # Scatter: CAGR vs MaxDD
-                pf_valid = pf[(pf["cagr"] > 0) & (pf["max_drawdown"] > 0)].copy()
-                if not pf_valid.empty:
-                    import plotly.express as px
-                    fig = px.scatter(
-                        pf_valid, x="max_drawdown", y="cagr",
-                        hover_data=["kama_period", "lookback_period",
-                                     "kama_buffer", "top_n"],
-                        labels={"max_drawdown": "Max Drawdown",
-                                "cagr": "CAGR"},
-                        title="Pareto Front: CAGR vs Max Drawdown",
-                    )
-                    fig.update_traces(marker=dict(size=8))
-                    fig.update_layout(
-                        xaxis_tickformat=".0%",
-                        yaxis_tickformat=".0%",
-                        height=400,
-                    )
-                    st.plotly_chart(fig, width="stretch")
-
-                    # Top by Calmar
-                    pf_valid["calmar"] = pf_valid["cagr"] / pf_valid["max_drawdown"]
-                    top = pf_valid.nlargest(10, "calmar")[
-                        ["kama_period", "lookback_period", "kama_buffer",
-                         "top_n", "cagr", "max_drawdown", "calmar"]
-                    ].reset_index(drop=True)
-                    top.index += 1
-                    fmt = {"cagr": "{:.2%}", "max_drawdown": "{:.2%}",
-                           "calmar": "{:.2f}", "kama_buffer": "{:.3f}"}
-                    st.dataframe(top.style.format(fmt), width="stretch")
-            else:
-                st.warning("No valid Pareto front solutions found.")
 
     elif kind == "wfo":
         with st.expander("Walk-Forward Optimization Results", expanded=False):
@@ -1062,8 +1004,6 @@ def main():
         # Base param kwargs shared across all branches
         common_kwargs = dict(
             use_risk_adjusted=sidebar["use_risk_adjusted"],
-            enable_correlation_filter=sidebar["enable_correlation"],
-            correlation_threshold=sidebar["corr_threshold"],
             sizing_mode=sidebar["sizing_mode"],
             volatility_lookback=sidebar["vol_lookback"],
             max_weight=sidebar["max_weight"],
@@ -1088,67 +1028,45 @@ def main():
                 best = find_best_params(sens_result)
                 st.session_state["opt_detail"] = ("sensitivity", sens_result)
 
-        elif opt_mode in ("Max Profit (TPE)", "Max Profit (Pareto)"):
+        elif opt_mode == "Max Profit (TPE)":
             fixed = {
-                "enable_correlation_filter": True,
-                "correlation_threshold": 0.65,
                 "use_risk_adjusted": True,
                 "sizing_mode": "risk_parity",
             }
-            from src.portfolio_sim.max_profit import (
-                run_max_profit_pareto,
-                run_max_profit_search,
-                select_best_from_pareto,
-            )
+            from src.portfolio_sim.max_profit import run_max_profit_search
             from src.portfolio_sim.params import StrategyParams as _SP
 
             base = _SP(
                 use_risk_adjusted=True,
-                enable_correlation_filter=True,
                 sizing_mode="risk_parity",
             )
 
-            if opt_mode == "Max Profit (TPE)":
-                with st.spinner(f"Max-profit TPE search ({n_trials} trials)..."):
-                    mp_result = run_max_profit_search(
-                        close_prices, open_prices, valid,
-                        sidebar["initial_capital"],
-                        universe="etf",
-                        default_params=base,
-                        fixed_params=fixed,
-                        n_trials=n_trials,
-                        max_dd_limit=sidebar["opt_max_dd"],
+            with st.spinner(f"Max-profit TPE search ({n_trials} trials)..."):
+                mp_result = run_max_profit_search(
+                    close_prices, open_prices, valid,
+                    sidebar["initial_capital"],
+                    universe="etf",
+                    default_params=base,
+                    fixed_params=fixed,
+                    n_trials=n_trials,
+                    max_dd_limit=sidebar["opt_max_dd"],
+                )
+                grid = mp_result.grid_results
+                top = grid[grid["objective_cagr"] > -999.0]
+                if not top.empty:
+                    b = top.nlargest(1, "cagr").iloc[0]
+                    best = StrategyParams(
+                        kama_period=int(b["kama_period"]),
+                        lookback_period=int(b["lookback_period"]),
+                        top_n=int(b["top_n"]),
+                        kama_buffer=float(b["kama_buffer"]),
                     )
-                    grid = mp_result.grid_results
-                    top = grid[grid["objective_cagr"] > -999.0]
-                    if not top.empty:
-                        b = top.nlargest(1, "cagr").iloc[0]
-                        best = StrategyParams(
-                            kama_period=int(b["kama_period"]),
-                            lookback_period=int(b["lookback_period"]),
-                            top_n=int(b["top_n"]),
-                            kama_buffer=float(b["kama_buffer"]),
-                        )
-                    st.session_state["opt_detail"] = ("max_profit_tpe", mp_result)
-            else:
-                with st.spinner(f"Pareto search NSGA-II ({n_trials} trials)..."):
-                    mp_result = run_max_profit_pareto(
-                        close_prices, open_prices, valid,
-                        sidebar["initial_capital"],
-                        universe="etf",
-                        default_params=base,
-                        fixed_params=fixed,
-                        n_trials=n_trials,
-                    )
-                    best = select_best_from_pareto(mp_result)
-                    st.session_state["opt_detail"] = ("max_profit_pareto", mp_result)
+                st.session_state["opt_detail"] = ("max_profit_tpe", mp_result)
 
             # Override diversification/sizing with max-profit fixed params
             if best is not None:
                 common_kwargs.update(
                     use_risk_adjusted=True,
-                    enable_correlation_filter=True,
-                    correlation_threshold=0.65,
                     sizing_mode="risk_parity",
                 )
 
@@ -1175,8 +1093,7 @@ def main():
                 f"Optimal: KAMA={best.kama_period}, "
                 f"Lookback={best.lookback_period}, "
                 f"Buffer={best.kama_buffer}, "
-                f"Top N={best.top_n}, "
-                f"Corr={best.enable_correlation_filter}",
+                f"Top N={best.top_n}",
                 icon="✅",
             )
             common_kwargs.update(
@@ -1184,8 +1101,6 @@ def main():
                 lookback_period=best.lookback_period,
                 top_n=best.top_n,
                 kama_buffer=best.kama_buffer,
-                enable_correlation_filter=best.enable_correlation_filter,
-                correlation_threshold=best.correlation_threshold,
             )
         elif opt_mode != "None":
             st.warning("Optimization found no valid combinations. Using manual parameters.")

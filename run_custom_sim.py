@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Custom simulation runner for specified parameters:
-kama=10, lbk=80, top_n=15, buf=0.025
+kama=30, lbk=20, top_n=5, buf=0.005
 """
 
 import pandas as pd
@@ -17,10 +17,10 @@ from src.portfolio_sim.reporting import compute_metrics, save_equity_png, format
 def main():
     # 1. Setup parameters
     params = StrategyParams(
-        kama_period=20,
-        lookback_period=60,
-        top_n=20,
-        kama_buffer=0.02,
+        kama_period=30,
+        lookback_period=20,
+        top_n=5,
+        kama_buffer=0.005,
     )
     
     # 2. Prepare output directory
@@ -30,7 +30,6 @@ def main():
     
     print(f"--- Starting Custom Simulation ---")
     print(f"Params: KAMA={params.kama_period}, Lookback={params.lookback_period}, Top-N={params.top_n}, Buffer={params.kama_buffer}")
-    
     # 3. Load data
     tickers_requested = fetch_etf_tickers()
     close_prices, open_prices = fetch_price_data(tickers_requested, period="5y", cache_suffix="_etf")
@@ -56,7 +55,7 @@ def main():
         equity=result.equity,
         spy_equity=result.spy_equity,
         output_dir=output_dir,
-        title=f"Custom Sim: KAMA 10/80/15/0.025"
+        title=f"Custom Sim: KAMA 30/20/5/0.005"
     )
     
     # 6. Save Transactions CSV
