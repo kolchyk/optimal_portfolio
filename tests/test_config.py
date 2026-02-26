@@ -14,9 +14,21 @@ def test_constants_values():
     assert INITIAL_CAPITAL == 10_000
     assert KAMA_PERIOD == 20
     assert LOOKBACK_PERIOD == 60
-    assert TOP_N == 20
-    assert KAMA_BUFFER == 0.008
+    assert TOP_N == 10
+    assert KAMA_BUFFER == 0.024
     assert SPY_TICKER == "SPY"
+
+
+def test_etf_universe_crypto():
+    from src.portfolio_sim.config import ETF_UNIVERSE
+    crypto_etfs = ["IBIT", "FBTC", "GBTC", "ARKB", "ETHA"]
+    # After implementation, these should be in the universe
+    for etf in crypto_etfs:
+        assert etf in ETF_UNIVERSE
+    
+    # And old tickers should NOT be in the universe
+    assert "BTC-USD" not in ETF_UNIVERSE
+    assert "ETH-USD" not in ETF_UNIVERSE
 
 
 def test_constants_types():

@@ -64,10 +64,8 @@ ETF_UNIVERSE: list[str] = [
     "VNQ", "SCHH", "RWR", "USRT", "REZ", "FRI", "AREA", "RWO", "VNQI", "BBRE",
     "REM", "SRVR", "MORT", "KBWY", "REET", "DFAR", "BCREX", "CSCIX", "PSTL", "ILPT",
 
-    # Crypto (Yahoo Finance format)
-    "BTC-USD", "ETH-USD", "SOL-USD", "BNB-USD", "XRP-USD", "ADA-USD", "DOGE-USD",
-    "TRX-USD", "DOT-USD", "LINK-USD", "AVAX-USD", "MATIC-USD", "LTC-USD", "BCH-USD",
-    "SHIB-USD", "SUI-USD", "NEAR-USD", "APT-USD", "HBAR-USD", "ONDO-USD",
+    # Crypto ETFs
+    "IBIT", "FBTC", "GBTC", "ARKB", "ETHA",
 ]
 
 ASSET_CLASS_MAP: dict[str, str] = {
