@@ -5,8 +5,8 @@ Signals computed on Close(T), execution on Open(T+1).
 Key design decisions that prevent capital destruction:
   - Lazy hold: positions are sold ONLY when their own KAMA stop-loss triggers,
     never because they dropped in the momentum ranking.
-  - Position sizing: strict 1/TOP_N (equal weight) OR inverse-volatility
-    (risk parity), controlled by sizing_mode parameter.
+  - Position sizing: inverse-volatility (risk parity) — low-vol assets get
+    larger allocations so each position contributes roughly equal dollar risk.
 """
 
 from __future__ import annotations
@@ -86,9 +86,7 @@ def run_simulation(
     _volatility = _daily_abs_diff.rolling(p.lookback_period, min_periods=1).sum()
     er_df = (_price_change / _volatility).clip(0, 1).fillna(0)
 
-    rp_vol_df = None
-    if p.sizing_mode == "risk_parity":
-        rp_vol_df = returns_df.rolling(p.volatility_lookback, min_periods=5).std()
+    rp_vol_df = returns_df.rolling(p.volatility_lookback, min_periods=5).std()
 
     # ------------------------------------------------------------------
     # 1. Determine simulation start (need warm-up for KAMA + lookback)
@@ -139,7 +137,7 @@ def run_simulation(
             shares_before = set(shares.keys())
             cash = _execute_trades(
                 shares, pending_trades, equity_at_open, daily_open,
-                p.top_n, weights=pending_weights, max_weight=p.max_weight,
+                p.top_n, weights=pending_weights,
             )
 
             # Record trades
@@ -203,21 +201,6 @@ def run_simulation(
                 if not np.isnan(val):
                     kama_current[t] = val
 
-        # Previous KAMA values for slope gate
-        kama_prev: dict[str, float] = {}
-        if p.kama_slope_filter and i > 0:
-            prev_date = sim_dates[i - 1]
-            for t in tickers:
-                if t in kama_cache:
-                    t_kama_s = kama_cache[t]
-                    val = (
-                        t_kama_s.get(prev_date, np.nan)
-                        if prev_date in t_kama_s.index
-                        else np.nan
-                    )
-                    if not np.isnan(val):
-                        kama_prev[t] = val
-
         # Single-row DataFrame for the KAMA filter (Close > KAMA check)
         prices_row = _prices.loc[[date]]
 
@@ -227,8 +210,6 @@ def run_simulation(
             use_risk_adjusted=p.use_risk_adjusted,
             precomputed_momentum=momentum_df.loc[date],
             precomputed_er=er_df.loc[date],
-            kama_prev_values=kama_prev if p.kama_slope_filter else None,
-            kama_slope_filter=p.kama_slope_filter,
         )
 
         # --- Correlation filter: skip candidates too correlated with holdings ---
@@ -281,23 +262,12 @@ def run_simulation(
         if new_trades:
             pending_trades = new_trades
 
-            # Compute risk parity weights for new buys
-            if p.sizing_mode == "risk_parity":
-                buys_list = [t for t, v in new_trades.items() if v == 1.0]
-                if buys_list:
-                    if rp_vol_df is not None:
-                        pending_weights = _compute_inverse_vol_weights_fast(
-                            buys_list, rp_vol_df.loc[date],
-                            max_weight=p.max_weight,
-                        )
-                    else:
-                        idx_in_full = close_prices.index.get_loc(date)
-                        vol_start = max(0, idx_in_full - p.volatility_lookback)
-                        vol_prices = close_prices.iloc[vol_start : idx_in_full + 1]
-                        pending_weights = _compute_inverse_vol_weights(
-                            buys_list, vol_prices, p.volatility_lookback,
-                            max_weight=p.max_weight,
-                        )
+            # Compute risk parity (inverse-vol) weights for new buys
+            buys_list = [t for t, v in new_trades.items() if v == 1.0]
+            if buys_list:
+                pending_weights = _compute_inverse_vol_weights_fast(
+                    buys_list, rp_vol_df.loc[date],
+                )
 
     n = len(equity_values)
     idx = sim_dates[:n]
@@ -316,48 +286,11 @@ def run_simulation(
     )
 
 
-def _cap_and_redistribute(
-    weights: dict[str, float], max_weight: float,
-) -> dict[str, float]:
-    """Cap each weight at *max_weight* and redistribute excess proportionally.
-
-    Iterative: after redistribution some weights may exceed the cap again,
-    so we repeat until convergence (at most N rounds).
-    """
-    if max_weight >= 1.0:
-        return weights
-
-    result = dict(weights)
-    for _ in range(len(result)):
-        excess = 0.0
-        uncapped_total = 0.0
-        for t, w in result.items():
-            if w > max_weight:
-                excess += w - max_weight
-                result[t] = max_weight
-            elif w < max_weight:
-                uncapped_total += w
-            # w == max_weight: already at cap, skip
-
-        if excess < 1e-10:
-            break
-
-        if uncapped_total > 0:
-            for t in result:
-                if result[t] < max_weight:
-                    result[t] += excess * (result[t] / uncapped_total)
-        else:
-            break
-
-    return result
-
-
 def _inv_vols_to_weights(
     inv_vols: dict[str, float],
     tickers_to_buy: list[str],
-    max_weight: float = 1.0,
 ) -> dict[str, float]:
-    """Normalize inverse-volatility values into capped portfolio weights.
+    """Normalize inverse-volatility values into portfolio weights.
 
     Falls back to equal weight when no valid inverse-volatility could be
     computed for any ticker.
@@ -366,55 +299,17 @@ def _inv_vols_to_weights(
         return {t: 1.0 / len(tickers_to_buy) for t in tickers_to_buy}
 
     total = sum(inv_vols.values())
-    weights = {t: v / total for t, v in inv_vols.items()}
-    return _cap_and_redistribute(weights, max_weight)
-
-
-def _compute_inverse_vol_weights(
-    tickers_to_buy: list[str],
-    close_prices_window: pd.DataFrame,
-    volatility_lookback: int = 20,
-    max_weight: float = 1.0,
-) -> dict[str, float]:
-    """Compute inverse-volatility weights for a set of tickers.
-
-    Each ticker's weight is proportional to 1/volatility, so low-vol assets
-    (e.g. bonds) get larger allocations and high-vol assets (e.g. EM equities)
-    get smaller allocations. This ensures each position contributes roughly
-    equal dollar risk to the portfolio.
-
-    Falls back to equal weight if volatility cannot be computed.
-    """
-    if not tickers_to_buy:
-        return {}
-
-    inv_vols: dict[str, float] = {}
-    for t in tickers_to_buy:
-        if t not in close_prices_window.columns:
-            continue
-        recent = close_prices_window[t].iloc[-volatility_lookback:]
-        returns = recent.pct_change().dropna()
-        if len(returns) < 5:
-            continue
-        vol = returns.std()
-        if vol > 1e-8:
-            inv_vols[t] = 1.0 / vol
-        else:
-            inv_vols[t] = 1.0  # near-zero vol: treat as equal weight
-
-    return _inv_vols_to_weights(inv_vols, tickers_to_buy, max_weight)
+    return {t: v / total for t, v in inv_vols.items()}
 
 
 def _compute_inverse_vol_weights_fast(
     tickers_to_buy: list[str],
     vol_row: pd.Series,
-    max_weight: float = 1.0,
 ) -> dict[str, float]:
     """Compute inverse-volatility weights from a pre-computed volatility row.
 
-    Same logic as ``_compute_inverse_vol_weights`` but avoids recomputing
-    ``pct_change`` and ``std`` from raw prices — uses a single row from a
-    pre-computed rolling-volatility DataFrame instead.
+    Each ticker's weight is proportional to 1/volatility, so low-vol assets
+    get larger allocations and high-vol assets get smaller allocations.
     """
     if not tickers_to_buy:
         return {}
@@ -429,7 +324,7 @@ def _compute_inverse_vol_weights_fast(
         else:
             inv_vols[t] = 1.0  # near-zero vol: treat as equal weight
 
-    return _inv_vols_to_weights(inv_vols, tickers_to_buy, max_weight)
+    return _inv_vols_to_weights(inv_vols, tickers_to_buy)
 
 
 def _execute_trades(
@@ -439,7 +334,6 @@ def _execute_trades(
     open_prices: pd.Series,
     top_n: int = StrategyParams().top_n,
     weights: dict[str, float] | None = None,
-    max_weight: float = 1.0,
 ) -> float:
     """Execute trades. Mutates ``shares`` in place. Returns remaining cash.
 
@@ -449,7 +343,6 @@ def _execute_trades(
 
     When *weights* is provided (risk parity mode), each buy's allocation is
     equity_at_open * weights[t]. Otherwise strict 1/top_n equal weight.
-    *max_weight* caps any single position at equity_at_open * max_weight.
     """
     total_cost = 0.0
 
@@ -473,10 +366,7 @@ def _execute_trades(
             if weights is not None and t in weights:
                 max_allocation = equity_at_open * weights[t]
             else:
-                max_allocation = min(
-                    equity_at_open / top_n,
-                    equity_at_open * max_weight,
-                )
+                max_allocation = equity_at_open / top_n
             allocation = min(max_allocation, available)
             if price > 0 and allocation > 0:
                 net_investment = allocation / (1 + COST_RATE)

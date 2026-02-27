@@ -20,7 +20,7 @@ KAMA_PERIOD: int = 40
 LOOKBACK_PERIOD: int = 40
 TOP_N: int = 25
 KAMA_BUFFER: float = 0.01
-OOS_DAYS: int = 20
+OOS_DAYS: int = 21
 CORR_THRESHOLD: float = 0.7
 
 # ---------------------------------------------------------------------------

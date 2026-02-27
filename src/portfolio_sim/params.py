@@ -27,15 +27,8 @@ class StrategyParams:
     kama_buffer: float = KAMA_BUFFER
     use_risk_adjusted: bool = True
 
-    # Position sizing: "equal_weight" or "risk_parity"
-    sizing_mode: str = "equal_weight"
+    # Risk-parity (inverse-volatility) lookback window
     volatility_lookback: int = VOLATILITY_LOOKBACK
-
-    # Max weight per position (1.0 = no cap)
-    max_weight: float = 1.0
-
-    # Require KAMA trending up for entry (kama_now > kama_prev)
-    kama_slope_filter: bool = True
 
     # WFO out-of-sample window (trading days)
     oos_days: int = OOS_DAYS

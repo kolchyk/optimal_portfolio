@@ -781,36 +781,13 @@ def _render_sidebar() -> dict:
                      "предпочитает плавные восходящие тренды.",
             )
 
-            kama_slope_filter = st.toggle(
-                "KAMA slope gate",
-                value=False,
-                help="Требовать, чтобы KAMA была направлена вверх для входа. "
-                     "Дополнительная фильтрация: не покупать активы с плоской KAMA.",
-            )
-
         # --- Группа 3: Расширенные настройки ---
         with st.expander("⚙️ Расширенные настройки", expanded=False):
-            sizing_options = ["Equal Weight", "Risk Parity (Inverse Vol)"]
-            sizing_choice = st.radio(
-                "Метод определения весов",
-                options=sizing_options,
-                index=1 if is_etf_mode else 0,
-                help="Risk Parity: больше веса низковолатильным активам (облигации) и меньше высоковолатильным (акции).",
+            vol_lookback = st.slider(
+                "Окно волатильности (дни)", min_value=10, max_value=60,
+                value=VOLATILITY_LOOKBACK,
+                help="Окно для расчета весов Risk Parity (обратная волатильность)"
             )
-            sizing_mode = "risk_parity" if sizing_choice == sizing_options[1] else "equal_weight"
-            vol_lookback = VOLATILITY_LOOKBACK
-            if sizing_mode == "risk_parity":
-                vol_lookback = st.slider(
-                    "Окно волатильности (дни)", min_value=10, max_value=60,
-                    value=VOLATILITY_LOOKBACK,
-                    help="Окно для расчета весов на основе обратной волатильности"
-                )
-
-            max_weight = st.slider(
-                "Макс. вес позиции (%)",
-                min_value=5, max_value=50, value=15, step=1,
-                help="Ограничение веса любого отдельного актива в портфеле"
-            ) / 100.0
 
     return {
         "universe_mode": universe_mode,
@@ -826,10 +803,7 @@ def _render_sidebar() -> dict:
         "lookback_period": lookback_period,
         "kama_buffer": kama_buffer,
         "use_risk_adjusted": use_risk_adjusted,
-        "kama_slope_filter": kama_slope_filter,
-        "sizing_mode": sizing_mode,
         "vol_lookback": vol_lookback,
-        "max_weight": max_weight,
         "run_clicked": run_clicked,
     }
 
@@ -926,9 +900,7 @@ def main():
     st.title("KAMA Momentum Strategy")
 
     st.caption(
-        "Long/Cash only • Cross-asset ETFs • "
-        + ("Risk Parity" if sidebar["sizing_mode"] == "risk_parity" else "Equal Weight")
-        + " • Daily KAMA review"
+        "Long/Cash only • Cross-asset ETFs • Risk Parity • Daily KAMA review"
     )
 
     if sidebar["run_clicked"]:
@@ -947,10 +919,7 @@ def main():
         # Base param kwargs shared across all branches
         common_kwargs = dict(
             use_risk_adjusted=sidebar["use_risk_adjusted"],
-            kama_slope_filter=sidebar["kama_slope_filter"],
-            sizing_mode=sidebar["sizing_mode"],
             volatility_lookback=sidebar["vol_lookback"],
-            max_weight=sidebar["max_weight"],
         )
 
         # --- Optimization dispatch ---

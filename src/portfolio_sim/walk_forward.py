@@ -41,8 +41,8 @@ log = structlog.get_logger()
 # ---------------------------------------------------------------------------
 def generate_wfo_schedule(
     dates: pd.DatetimeIndex,
-    min_is_days: int = 756,
-    oos_days: int = 252,
+    min_is_days: int = 126,
+    oos_days: int = 21,
 ) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
     """Generate (is_start, is_end, oos_start, oos_end) tuples.
 
@@ -98,8 +98,8 @@ def run_walk_forward(
     to produce the aggregate out-of-sample performance.
 
     When *min_is_days* / *oos_days* are ``None`` they default to
-    756 (3 years) and 252 (1 year) respectively — long enough to
-    capture diverse market conditions for robust optimization.
+    126 (6 months) and 21 (~1 month) respectively — allowing
+    frequent re-optimization every few weeks.
 
     When *kama_caches* and/or *executor* are provided, they are reused
     across all WFO steps to avoid redundant computation and pool startup.
@@ -107,9 +107,9 @@ def run_walk_forward(
     base_params = base_params or StrategyParams()
     space = space or SEARCH_SPACE
     if min_is_days is None:
-        min_is_days = 756   # 3 years — capture diverse market conditions
+        min_is_days = 126   # 6 months — reactive to current regime
     if oos_days is None:
-        oos_days = 252      # 1 year — meaningful OOS validation
+        oos_days = 21       # ~1 month — frequent re-optimization
     if not n_workers or n_workers < 1:
         n_workers = os.cpu_count()
 

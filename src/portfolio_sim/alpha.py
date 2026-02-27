@@ -2,7 +2,6 @@
 
 Selects buy candidates from the universe based on:
   1. KAMA trend filter: keep stocks where Close > KAMA * (1 + KAMA_BUFFER).
-     Optional slope gate: require KAMA trending up (kama_now > kama_prev).
   2. ER²-adjusted momentum ranking: sort by return * ER² (Cascade-style
      momentum), take top N.  Harshly penalizes choppy action, rewards
      smooth directional trends.
@@ -28,8 +27,6 @@ def get_buy_candidates(
     use_risk_adjusted: bool = True,
     precomputed_momentum: pd.Series | None = None,
     precomputed_er: pd.Series | None = None,
-    kama_prev_values: dict[str, float] | None = None,
-    kama_slope_filter: bool = False,
 ) -> list[str]:
     """Return an ordered list of top-momentum tickers passing the KAMA filter.
 
@@ -48,8 +45,6 @@ def get_buy_candidates(
         precomputed_er: optional pre-computed Efficiency Ratio per ticker
                         for the current date. Used with precomputed_momentum
                         for ER²-adjusted scoring.
-        kama_prev_values: {ticker: previous_day_kama_value} for slope gate.
-        kama_slope_filter: if True, require KAMA trending up (kama > kama_prev).
 
     Returns:
         List of up to *top_n* ticker symbols, ranked by descending score.
@@ -65,11 +60,6 @@ def get_buy_candidates(
         if np.isnan(close) or np.isnan(kama):
             continue
         if close > kama * (1 + kama_buffer):
-            # Optional KAMA slope gate: require upward KAMA trend
-            if kama_slope_filter and kama_prev_values is not None:
-                kama_prev = kama_prev_values.get(t, np.nan)
-                if not np.isnan(kama_prev) and kama <= kama_prev:
-                    continue
             candidates.append(t)
 
     if not candidates:

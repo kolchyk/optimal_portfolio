@@ -43,7 +43,11 @@ def register(subparsers) -> None:
     )
     p.add_argument(
         "--oos-days", type=int, default=None,
-        help="OOS window size in trading days (default: from StrategyParams)",
+        help="OOS window size in trading days (default: 21 ≈ 1 month)",
+    )
+    p.add_argument(
+        "--min-is-days", type=int, default=None,
+        help="IS window size in trading days (default: 126 ≈ 6 months)",
     )
 
 
@@ -58,6 +62,9 @@ def run(args) -> None:
     base_params = StrategyParams()
     if args.oos_days is not None:
         base_params = StrategyParams(oos_days=args.oos_days)
+
+    min_is_days = args.min_is_days  # None → run_walk_forward uses its default (126)
+    oos_days = args.oos_days        # None → run_walk_forward uses its default (21)
 
     min_days = base_params.lookback_period
     print(f"Downloading price data ({args.period})...")
@@ -74,11 +81,11 @@ def run(args) -> None:
         print("Try: python -m src.portfolio_sim walk-forward --refresh")
         sys.exit(1)
 
-    min_is = base_params.lookback_period
-    oos = base_params.oos_days
+    display_is = min_is_days or 126
+    display_oos = oos_days or 21
     print(f"\nStarting walk-forward optimization...")
-    print(f"  IS minimum (= lookback_period): {min_is} days (~{min_is / 21:.0f} months)")
-    print(f"  OOS window: {oos} days (~{oos / 21:.0f} months)")
+    print(f"  IS window: {display_is} days (~{display_is / 21:.0f} months)")
+    print(f"  OOS window: {display_oos} days (~{display_oos / 21:.0f} weeks)")
     print(f"  Trials per step: {args.n_trials}")
     print()
 
@@ -90,6 +97,8 @@ def run(args) -> None:
         base_params=base_params,
         n_trials_per_step=args.n_trials,
         n_workers=args.n_workers,
+        min_is_days=min_is_days,
+        oos_days=oos_days,
     )
 
     report = format_wfo_report(result)
