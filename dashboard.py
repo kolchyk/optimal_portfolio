@@ -715,29 +715,19 @@ def _render_sidebar() -> dict:
 
             optimize_mode = st.selectbox(
                 "Режим оптимизации",
-                ["None", "Sensitivity Analysis", "Max Profit (TPE)",
-                 "Walk-Forward"],
-                help="Метод поиска параметров перед бэктестом"
+                ["None", "Walk-Forward"],
+                help="Walk-Forward Optimization: оптимизация на IS-окне, валидация на OOS"
             )
 
             opt_n_trials = 50
-            opt_max_dd = 0.60
+            opt_max_dd = 0.30
             opt_oos_days = 126
 
-            if optimize_mode != "None":
+            if optimize_mode == "Walk-Forward":
                 opt_n_trials = st.slider(
-                    "Количество итераций Optuna", min_value=20, max_value=200,
+                    "Количество итераций Optuna", min_value=20, max_value=500,
                     value=50, step=10,
                 )
-
-            if optimize_mode == "Max Profit (TPE)":
-                opt_max_dd = st.slider(
-                    "Лимит просадки (%)", min_value=10, max_value=90,
-                    value=60, step=5,
-                    help="Отклонять комбинации с просадкой выше этого лимита.",
-                ) / 100.0
-
-            if optimize_mode == "Walk-Forward":
                 opt_oos_days = st.slider(
                     "OOS окно (дни)", min_value=63, max_value=252,
                     value=126, step=21,
@@ -829,7 +819,6 @@ def _render_sidebar() -> dict:
         "refresh": refresh,
         "optimize_mode": optimize_mode,
         "opt_n_trials": opt_n_trials,
-        "opt_max_dd": opt_max_dd,
         "opt_oos_days": opt_oos_days,
         "initial_capital": float(initial_capital),
         "top_n": top_n,
@@ -856,56 +845,7 @@ def _render_optimization_results() -> None:
 
     kind, data = detail
 
-    if kind == "sensitivity":
-        with st.expander("Sensitivity Analysis Results", expanded=False):
-            # Robustness scores
-            st.subheader("Robustness Scores")
-            scores = data.robustness_scores
-            cols = st.columns(len(scores))
-            for col, (name, score) in zip(cols, scores.items()):
-                verdict = "Robust" if score >= 0.8 else "Moderate" if score >= 0.5 else "Sensitive"
-                col.metric(name, f"{score:.2f}", verdict)
-
-            # Top combos
-            valid = data.grid_results[data.grid_results["objective"] > -999.0]
-            if not valid.empty:
-                st.subheader("Top 10 Combinations")
-                top = valid.nlargest(10, "objective")[
-                    ["kama_period", "lookback_period", "kama_buffer", "top_n",
-                     "objective", "cagr", "max_drawdown", "sharpe"]
-                ].reset_index(drop=True)
-                top.index += 1
-                fmt = {
-                    "cagr": "{:.2%}",
-                    "max_drawdown": "{:.2%}",
-                    "objective": "{:.4f}",
-                    "sharpe": "{:.2f}",
-                    "kama_buffer": "{:.3f}",
-                }
-                st.dataframe(top.style.format(fmt), width="stretch")
-
-    elif kind == "max_profit_tpe":
-        with st.expander("Max Profit (TPE) Results", expanded=False):
-            grid = data.grid_results
-            valid = grid[grid["objective_cagr"] > -999.0]
-            st.caption(
-                f"{len(grid)} trials, {len(valid)} valid "
-                f"({len(valid) / max(len(grid), 1):.0%})"
-            )
-            if not valid.empty:
-                st.subheader("Top 10 by CAGR")
-                display_cols = ["kama_period", "lookback_period", "kama_buffer",
-                                "top_n", "cagr", "max_drawdown", "sharpe"]
-                existing = [c for c in display_cols if c in valid.columns]
-                top = valid.nlargest(10, "cagr")[existing].reset_index(drop=True)
-                top.index += 1
-                fmt = {"cagr": "{:.2%}", "max_drawdown": "{:.2%}",
-                       "sharpe": "{:.2f}", "kama_buffer": "{:.3f}"}
-                st.dataframe(top.style.format(
-                    {k: v for k, v in fmt.items() if k in existing}
-                ), width="stretch")
-
-    elif kind == "wfo":
+    if kind == "wfo":
         with st.expander("Walk-Forward Optimization Results", expanded=False):
             wfo = data
             # Per-step table
@@ -1018,63 +958,7 @@ def main():
         opt_mode = sidebar["optimize_mode"]
         n_trials = sidebar["opt_n_trials"]
 
-        if opt_mode == "Sensitivity Analysis":
-            with st.spinner(f"Sensitivity analysis ({n_trials} trials)..."):
-                from src.portfolio_sim.optimizer import (
-                    find_best_params, run_sensitivity,
-                )
-                sens_result = run_sensitivity(
-                    close_prices, open_prices, valid,
-                    sidebar["initial_capital"],
-                    n_trials=n_trials,
-                    n_workers=-1,
-                )
-                best = find_best_params(sens_result)
-                st.session_state["opt_detail"] = ("sensitivity", sens_result)
-
-        elif opt_mode == "Max Profit (TPE)":
-            fixed = {
-                "use_risk_adjusted": True,
-                "sizing_mode": "risk_parity",
-            }
-            from src.portfolio_sim.max_profit import run_max_profit_search
-            from src.portfolio_sim.params import StrategyParams as _SP
-
-            base = _SP(
-                use_risk_adjusted=True,
-                sizing_mode="risk_parity",
-            )
-
-            with st.spinner(f"Max-profit TPE search ({n_trials} trials)..."):
-                mp_result = run_max_profit_search(
-                    close_prices, open_prices, valid,
-                    sidebar["initial_capital"],
-                    universe="etf",
-                    default_params=base,
-                    fixed_params=fixed,
-                    n_trials=n_trials,
-                    max_dd_limit=sidebar["opt_max_dd"],
-                )
-                grid = mp_result.grid_results
-                top = grid[grid["objective_cagr"] > -999.0]
-                if not top.empty:
-                    b = top.nlargest(1, "cagr").iloc[0]
-                    best = StrategyParams(
-                        kama_period=int(b["kama_period"]),
-                        lookback_period=int(b["lookback_period"]),
-                        top_n=int(b["top_n"]),
-                        kama_buffer=float(b["kama_buffer"]),
-                    )
-                st.session_state["opt_detail"] = ("max_profit_tpe", mp_result)
-
-            # Override diversification/sizing with max-profit fixed params
-            if best is not None:
-                common_kwargs.update(
-                    use_risk_adjusted=True,
-                    sizing_mode="risk_parity",
-                )
-
-        elif opt_mode == "Walk-Forward":
+        if opt_mode == "Walk-Forward":
             from src.portfolio_sim.walk_forward import run_walk_forward
 
             with st.spinner(

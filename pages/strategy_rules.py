@@ -14,7 +14,7 @@ from src.portfolio_sim.config import (
     KAMA_PERIOD,
     LOOKBACK_PERIOD,
     RISK_FREE_RATE,
-    SENSITIVITY_SPACE,
+    SEARCH_SPACE,
     SLIPPAGE_RATE,
     TOP_N,
     VOLATILITY_LOOKBACK,
@@ -345,7 +345,7 @@ _Детальніше — у секції 5._
         "Простір пошуку": [],
     }
     for name in PARAM_NAMES:
-        spec = SENSITIVITY_SPACE[name]
+        spec = SEARCH_SPACE[name]
         grid_data["Параметр"].append(name)
         if spec.get("type") == "categorical":
             grid_data["Простір пошуку"].append(
@@ -373,7 +373,7 @@ _Детальніше — у секції 5._
 > при 15 — вона крихка. Якщо працює при 10, 15, 20, 30 і 40 —
 > вона надійна.
 
-Запустити аналіз чутливості: `python run_optimizer.py`
+Запустити walk-forward оптимізацію: `uv run python -m src.portfolio_sim walk-forward`
         """
     )
 

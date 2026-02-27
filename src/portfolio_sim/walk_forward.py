@@ -19,9 +19,9 @@ import numpy as np
 import pandas as pd
 import structlog
 
-from src.portfolio_sim.config import INITIAL_CAPITAL, SENSITIVITY_SPACE
+from src.portfolio_sim.config import INITIAL_CAPITAL, SEARCH_SPACE
 from src.portfolio_sim.engine import run_simulation
-from src.portfolio_sim.models import WFOGridEntry, WFOGridResult, WFOResult, WFOStep
+from src.portfolio_sim.models import WFOResult, WFOStep
 from src.portfolio_sim.optimizer import (
     _get_kama_periods_from_space,
     compute_objective,
@@ -98,18 +98,18 @@ def run_walk_forward(
     to produce the aggregate out-of-sample performance.
 
     When *min_is_days* / *oos_days* are ``None`` they default to
-    ``base_params.lookback_period`` and ``base_params.oos_days``
-    respectively (unified parameter space).
+    756 (3 years) and 252 (1 year) respectively — long enough to
+    capture diverse market conditions for robust optimization.
 
     When *kama_caches* and/or *executor* are provided, they are reused
     across all WFO steps to avoid redundant computation and pool startup.
     """
     base_params = base_params or StrategyParams()
-    space = space or SENSITIVITY_SPACE
+    space = space or SEARCH_SPACE
     if min_is_days is None:
-        min_is_days = base_params.lookback_period
+        min_is_days = 756   # 3 years — capture diverse market conditions
     if oos_days is None:
-        oos_days = base_params.oos_days
+        oos_days = 252      # 1 year — meaningful OOS validation
     if not n_workers or n_workers < 1:
         n_workers = os.cpu_count()
 
@@ -410,207 +410,4 @@ def format_wfo_report(result: WFOResult) -> str:
 
     lines.append("")
     lines.append("=" * 90)
-    return "\n".join(lines)
-
-
-# ---------------------------------------------------------------------------
-# Schedule grid search
-# ---------------------------------------------------------------------------
-def _generate_grid(
-    space: dict[str, dict],
-    total_days: int | None = None,
-    min_wfo_steps: int = 3,
-) -> list[tuple[int, int]]:
-    """Generate all (lookback_period, oos_days) combos from unified search space.
-
-    ``lookback_period`` is used directly as ``min_is_days`` for WFO scheduling.
-
-    If *total_days* is given, combos where ``lookback + oos`` would not leave
-    room for at least *min_wfo_steps* are excluded up-front to save compute.
-    """
-    lbk_spec = space["lookback_period"]
-    oos_spec = space["oos_days"]
-    lbk_values = list(range(lbk_spec["low"], lbk_spec["high"] + 1, lbk_spec["step"]))
-    oos_values = list(range(oos_spec["low"], oos_spec["high"] + 1, oos_spec["step"]))
-    combos = [(lbk, oos_d) for lbk in lbk_values for oos_d in oos_values]
-
-    if total_days is not None:
-        max_window = total_days // min_wfo_steps
-        combos = [(lbk, oos_d) for lbk, oos_d in combos
-                  if lbk + oos_d <= max_window]
-
-    return combos
-
-
-def run_walk_forward_grid(
-    close_prices: pd.DataFrame,
-    open_prices: pd.DataFrame,
-    tickers: list[str],
-    initial_capital: float = INITIAL_CAPITAL,
-    base_params: StrategyParams | None = None,
-    space: dict[str, dict] | None = None,
-    n_trials_per_step: int = 50,
-    n_workers: int | None = None,
-    max_dd_limit: float = 0.30,
-) -> WFOGridResult:
-    """Grid search over (lookback_period, oos_days) WFO schedule combos.
-
-    Uses the unified ``SEARCH_SPACE`` to derive schedule parameters:
-    ``lookback_period`` maps directly to ``min_is_days``.
-
-    Runs a full WFO for each combination and picks the best by OOS Calmar.
-    Pre-computes KAMA caches and creates a single persistent executor
-    shared across all grid combinations and all WFO steps.
-    """
-    base_params = base_params or StrategyParams()
-    space = space or SENSITIVITY_SPACE
-    if not n_workers or n_workers < 1:
-        n_workers = os.cpu_count()
-
-    total_days = len(close_prices)
-    combos = _generate_grid(space, total_days=total_days)
-
-    log.info("wfo_grid_start", n_combos=len(combos))
-
-    # Pre-compute KAMA once for entire grid search
-    kama_periods = _get_kama_periods_from_space(space)
-    kama_caches = precompute_kama_caches(
-        close_prices, tickers, kama_periods, n_workers,
-    )
-    log.info("wfo_grid_kama_precomputed", n_periods=len(kama_caches))
-
-    # Create a single persistent executor for all grid combos + WFO steps
-    executor = ProcessPoolExecutor(
-        max_workers=n_workers,
-        initializer=init_eval_worker,
-        initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
-    )
-
-    entries: list[WFOGridEntry] = []
-    rows: list[dict] = []
-
-    try:
-        for idx, (lbk, oos_d) in enumerate(combos):
-            log.info(
-                "wfo_grid_combo",
-                combo=f"{idx + 1}/{len(combos)}",
-                lookback_period=lbk,
-                oos_days=oos_d,
-            )
-            try:
-                result = run_walk_forward(
-                    close_prices,
-                    open_prices,
-                    tickers,
-                    initial_capital,
-                    base_params=base_params,
-                    space=space,
-                    n_trials_per_step=n_trials_per_step,
-                    n_workers=n_workers,
-                    min_is_days=lbk,
-                    oos_days=oos_d,
-                    max_dd_limit=max_dd_limit,
-                    kama_caches=kama_caches,
-                    executor=executor,
-                )
-            except ValueError as exc:
-                log.warning(
-                    "wfo_grid_combo_skip",
-                    lookback_period=lbk,
-                    oos_days=oos_d,
-                    reason=str(exc),
-                )
-                rows.append({
-                    "lookback_period": lbk,
-                    "oos_days": oos_d,
-                    "calmar": np.nan,
-                    "cagr": np.nan,
-                    "max_drawdown": np.nan,
-                    "sharpe": np.nan,
-                    "n_steps": 0,
-                })
-                continue
-
-            calmar = result.oos_metrics.get("calmar", -999.0)
-            entry = WFOGridEntry(
-                lookback_period=lbk,
-                oos_days=oos_d,
-                wfo_result=result,
-                oos_calmar=calmar,
-            )
-            entries.append(entry)
-            rows.append({
-                "lookback_period": lbk,
-                "oos_days": oos_d,
-                "calmar": calmar,
-                "cagr": result.oos_metrics.get("cagr", 0.0),
-                "max_drawdown": result.oos_metrics.get("max_drawdown", 0.0),
-                "sharpe": result.oos_metrics.get("sharpe", 0.0),
-                "n_steps": len(result.steps),
-            })
-    finally:
-        executor.shutdown(wait=True)
-
-    if not entries:
-        raise ValueError("WFO grid search: no valid (lookback_period, oos_days) combination.")
-
-    best = max(entries, key=lambda e: e.oos_calmar)
-    summary = pd.DataFrame(rows)
-
-    log.info(
-        "wfo_grid_done",
-        best_lookback_period=best.lookback_period,
-        best_oos_days=best.oos_days,
-        best_calmar=f"{best.oos_calmar:.4f}",
-    )
-
-    return WFOGridResult(entries=entries, best_entry=best, summary=summary)
-
-
-def format_wfo_grid_report(grid_result: WFOGridResult) -> str:
-    """Format a human-readable WFO schedule grid search report."""
-    lines: list[str] = []
-    lines.append("=" * 90)
-    lines.append("WFO SCHEDULE GRID SEARCH REPORT")
-    lines.append("=" * 90)
-
-    lines.append("")
-    lines.append(f"Combinations tested: {len(grid_result.summary)}")
-    lines.append(f"Valid results:       {len(grid_result.entries)}")
-
-    # Grid table
-    lines.append("")
-    lines.append("-" * 90)
-    header = (
-        f"  {'Lookback':>8}  {'OOS days':>9}  {'Steps':>5}"
-        f"  {'Calmar':>8}  {'CAGR':>8}  {'MaxDD':>8}  {'Sharpe':>8}"
-    )
-    lines.append(header)
-    lines.append("-" * 90)
-
-    summary = grid_result.summary.sort_values("calmar", ascending=False)
-    for _, row in summary.iterrows():
-        calmar_s = f"{row['calmar']:.4f}" if not np.isnan(row["calmar"]) else "  SKIP"
-        cagr_s = f"{row['cagr']:.2%}" if not np.isnan(row["cagr"]) else "    N/A"
-        maxdd_s = f"{row['max_drawdown']:.2%}" if not np.isnan(row["max_drawdown"]) else "    N/A"
-        sharpe_s = f"{row['sharpe']:.2f}" if not np.isnan(row["sharpe"]) else "    N/A"
-        lines.append(
-            f"  {int(row['lookback_period']):>8}  {int(row['oos_days']):>9}  {int(row['n_steps']):>5}"
-            f"  {calmar_s:>8}  {cagr_s:>8}  {maxdd_s:>8}  {sharpe_s:>8}"
-        )
-
-    # Best combo
-    best = grid_result.best_entry
-    lines.append("")
-    lines.append("-" * 90)
-    lines.append("BEST SCHEDULE:")
-    lines.append(f"  lookback_period = {best.lookback_period}")
-    lines.append(f"  oos_days        = {best.oos_days}")
-    lines.append(f"  OOS Calmar      = {best.oos_calmar:.4f}")
-    lines.append("-" * 90)
-
-    # Append full WFO report for best combo
-    lines.append("")
-    lines.append(format_wfo_report(best.wfo_result))
-
     return "\n".join(lines)

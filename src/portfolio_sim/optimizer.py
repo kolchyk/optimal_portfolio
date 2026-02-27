@@ -1,13 +1,7 @@
-"""Parameter sensitivity analysis for KAMA momentum strategy.
+"""Parameter optimization for KAMA momentum strategy.
 
-Uses Optuna TPE sampler to efficiently explore the parameter space
-and verify that performance is stable across a wide range of values.
-
-Key difference from optimization:
-  - Goal is NOT to find "best" parameters (that leads to overfitting).
-  - Goal is to confirm chosen defaults sit on a flat performance plateau.
-  - If performance varies wildly across the space → strategy is fragile.
-  - If performance is stable → parameters are robust, defaults are fine.
+Uses Optuna TPE sampler to explore the parameter space within each
+walk-forward optimization (WFO) in-sample window.
 """
 
 from __future__ import annotations
@@ -26,7 +20,7 @@ from tqdm import tqdm
 from src.portfolio_sim.config import (
     DEFAULT_N_TRIALS,
     INITIAL_CAPITAL,
-    SENSITIVITY_SPACE,
+    SEARCH_SPACE,
     SPY_TICKER,
 )
 from src.portfolio_sim.indicators import compute_kama_series
@@ -67,16 +61,10 @@ PARAM_NAMES: list[str] = [
 
 @dataclass
 class SensitivityResult:
-    """Results from a sensitivity analysis."""
+    """Results from parameter optimization."""
 
     grid_results: pd.DataFrame
     """All trial results: columns = param names + objective + metrics."""
-
-    marginal_profiles: dict[str, pd.DataFrame]
-    """1D marginal profiles: for each parameter, mean objective per value."""
-
-    robustness_scores: dict[str, float]
-    """0-1 score per parameter (1.0 = perfectly flat = robust)."""
 
     base_params: StrategyParams
     base_objective: float
@@ -114,13 +102,13 @@ def compute_objective(
     max_dd_limit: float = 0.30,
     min_n_days: int = 60,
 ) -> float:
-    """Total return with drawdown cap and hard rejection.
+    """Sharpe ratio with drawdown cap and hard rejection.
 
     Returns:
-        Total return (e.g. 0.50 for +50%), or -999.0 when MaxDD
-        exceeds *max_dd_limit* or the equity curve is degenerate.
+        Sharpe ratio, or -999.0 when MaxDD exceeds *max_dd_limit*
+        or the equity curve is degenerate.
     """
-    return make_objective("total_return", max_dd_limit, min_n_days)(equity)
+    return make_objective("sharpe", max_dd_limit, min_n_days)(equity)
 
 
 # ---------------------------------------------------------------------------
@@ -184,78 +172,12 @@ def _get_kama_periods_from_space(space: dict[str, dict]) -> list[int]:
     ))
 
 
-# Metric keys tracked per trial in sensitivity analysis
+# Metric keys tracked per trial
 _SENS_METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]
 
 
 # ---------------------------------------------------------------------------
-# Marginal profiles & robustness scores
-# ---------------------------------------------------------------------------
-def compute_marginal_profiles(
-    grid_df: pd.DataFrame,
-) -> dict[str, pd.DataFrame]:
-    """For each parameter, compute the mean objective across all other params.
-
-    Returns:
-        {param_name: DataFrame with columns [param_name, "mean_objective",
-         "std_objective", "count"]}
-    """
-    profiles: dict[str, pd.DataFrame] = {}
-    # Only profile params that exist in the grid
-    param_names = [n for n in PARAM_NAMES if n in grid_df.columns]
-    # Only consider valid results
-    valid = grid_df[grid_df["objective"] > -999.0]
-    if valid.empty:
-        for name in param_names:
-            profiles[name] = pd.DataFrame(
-                columns=[name, "mean_objective", "std_objective", "count"]
-            )
-        return profiles
-
-    for name in param_names:
-        agg = (
-            valid.groupby(name)["objective"]
-            .agg(["mean", "std", "count"])
-            .reset_index()
-        )
-        agg.columns = [name, "mean_objective", "std_objective", "count"]
-        profiles[name] = agg
-
-    return profiles
-
-
-def compute_robustness_scores(
-    profiles: dict[str, pd.DataFrame],
-) -> dict[str, float]:
-    """Score each parameter's robustness on a 0-1 scale.
-
-    Score = 1 - coefficient_of_variation(mean_objectives), clamped to [0, 1].
-    A score of 1.0 means the mean objective is perfectly flat across all values
-    of that parameter (= robust). Low scores indicate sensitivity.
-    """
-    scores: dict[str, float] = {}
-    param_names = list(profiles.keys()) if profiles else PARAM_NAMES
-    for name in param_names:
-        profile = profiles.get(name)
-        if profile is None or profile.empty:
-            scores[name] = 0.0
-            continue
-        means = profile["mean_objective"].values
-        if len(means) < 2:
-            scores[name] = 1.0
-            continue
-        avg = np.mean(means)
-        if avg <= 0:
-            scores[name] = 0.0
-            continue
-        cv = np.std(means) / avg
-        scores[name] = float(np.clip(1.0 - cv, 0.0, 1.0))
-
-    return scores
-
-
-# ---------------------------------------------------------------------------
-# Main sensitivity analysis
+# Main optimization
 # ---------------------------------------------------------------------------
 def run_sensitivity(
     close_prices: pd.DataFrame,
@@ -271,16 +193,11 @@ def run_sensitivity(
     kama_caches: dict[int, dict[str, pd.Series]] | None = None,
     executor: ProcessPoolExecutor | None = None,
 ) -> SensitivityResult:
-    """Run parameter sensitivity analysis using Optuna TPE sampler.
+    """Run parameter optimization using Optuna TPE sampler.
 
     1. Pre-compute KAMA for all possible kama_period values (parallel).
     2. Use Optuna to sample parameter combinations efficiently.
     3. Evaluate each combination in parallel via ProcessPoolExecutor.
-    4. Compute 1D marginal profiles (mean objective per parameter value).
-    5. Score robustness: flat profile = robust parameter.
-
-    This is NOT optimization — the goal is to verify that performance
-    is stable across parameter values, not to find the "best" combo.
 
     When *kama_caches* is provided, KAMA pre-computation is skipped.
     When *executor* is provided, a shared ProcessPoolExecutor is reused
@@ -288,7 +205,7 @@ def run_sensitivity(
     per-step slicing is handled via slice_spec in evaluate_combo).
     """
     base_params = base_params or StrategyParams()
-    space = space or SENSITIVITY_SPACE
+    space = space or SEARCH_SPACE
     if not n_workers or n_workers < 1:
         n_workers = os.cpu_count()
 
@@ -327,9 +244,6 @@ def run_sensitivity(
     own_executor = executor is None
 
     if own_executor:
-        # Use ask/tell API with batch parallelism via ProcessPoolExecutor.
-        # This avoids the overhead of Optuna's internal threading (n_jobs)
-        # while keeping full process-level parallelism for CPU-bound simulations.
         executor = ProcessPoolExecutor(
             max_workers=n_workers,
             initializer=init_eval_worker,
@@ -375,154 +289,21 @@ def run_sensitivity(
     else:
         base_objective = float("nan")
 
-    profiles = compute_marginal_profiles(grid_df)
-    scores = compute_robustness_scores(profiles)
-
     log.info(
         "sensitivity_done",
         n_valid=int((grid_df["objective"] > -999.0).sum()),
         n_total=len(grid_df),
-        robustness=scores,
     )
 
     return SensitivityResult(
         grid_results=grid_df,
-        marginal_profiles=profiles,
-        robustness_scores=scores,
         base_params=base_params,
         base_objective=base_objective,
     )
 
 
-# ---------------------------------------------------------------------------
-# Report formatting
-# ---------------------------------------------------------------------------
-def format_sensitivity_report(result: SensitivityResult) -> str:
-    """Format a human-readable sensitivity analysis report."""
-    lines: list[str] = []
-    lines.append("=" * 70)
-    lines.append("PARAMETER SENSITIVITY ANALYSIS REPORT")
-    lines.append("=" * 70)
-
-    # Base params info
-    bp = result.base_params
-    lines.append("")
-    lines.append("Base Parameters:")
-    lines.append(f"  kama_period:      {bp.kama_period}")
-    lines.append(f"  lookback_period:  {bp.lookback_period}")
-    lines.append(f"  kama_buffer:      {bp.kama_buffer}")
-    lines.append(f"  top_n:            {bp.top_n}")
-    lines.append(f"  oos_days:         {bp.oos_days}")
-    lines.append(f"  corr_threshold:   {bp.corr_threshold}")
-    if not np.isnan(result.base_objective):
-        lines.append(f"  base objective:  {result.base_objective:.4f}")
-    else:
-        lines.append("  base objective:  N/A (base combo not in trials)")
-
-    # Trials summary
-    grid_df = result.grid_results
-    valid = grid_df[grid_df["objective"] > -999.0]
-    lines.append("")
-    lines.append(f"Trials: {len(grid_df)} evaluated, "
-                 f"{len(valid)} valid ({len(valid)/len(grid_df):.0%})")
-
-    if not valid.empty:
-        lines.append(f"  Objective range: {valid['objective'].min():.4f} .. "
-                     f"{valid['objective'].max():.4f}")
-        lines.append(f"  Median objective: {valid['objective'].median():.4f}")
-
-    # Marginal profiles
-    lines.append("")
-    lines.append("-" * 70)
-    lines.append("Marginal Profiles (mean objective per parameter value):")
-    lines.append("-" * 70)
-
-    profile_names = list(result.marginal_profiles.keys()) or PARAM_NAMES
-    for name in profile_names:
-        profile = result.marginal_profiles.get(name)
-        if profile is None or profile.empty:
-            lines.append(f"\n  {name}: no valid data")
-            continue
-
-        lines.append(f"\n  {name}:")
-        for _, row in profile.iterrows():
-            val = row[name]
-            mean_obj = row["mean_objective"]
-            std_obj = row["std_objective"]
-            count = int(row["count"])
-            if isinstance(val, float):
-                lines.append(f"    {val:8.4f} → {mean_obj:.4f} (±{std_obj:.4f}, n={count})")
-            else:
-                lines.append(f"    {val:8} → {mean_obj:.4f} (±{std_obj:.4f}, n={count})")
-
-    # Robustness scores
-    lines.append("")
-    lines.append("-" * 70)
-    lines.append("Robustness Scores (1.0 = perfectly flat = robust):")
-    lines.append("-" * 70)
-
-    score_names = list(result.robustness_scores.keys()) or PARAM_NAMES
-    for name in score_names:
-        score = result.robustness_scores.get(name, 0.0)
-        if score >= 0.8:
-            verdict = "ROBUST"
-        elif score >= 0.5:
-            verdict = "MODERATE"
-        else:
-            verdict = "SENSITIVE — consider narrowing this parameter"
-        lines.append(f"  {name:20s}: {score:.2f}  {verdict}")
-
-    # Top combos
-    lines.append("")
-    lines.append("-" * 70)
-    lines.append("Top 10 Combinations by Objective:")
-    lines.append("-" * 70)
-
-    if not valid.empty:
-        top = valid.nlargest(10, "objective")
-        has_oos = "oos_days" in top.columns
-        has_corr = "corr_threshold" in top.columns
-        header = (
-            f"  {'kama':>5} {'lbk':>5} {'buf':>7} {'top_n':>5} "
-        )
-        if has_oos:
-            header += f"{'oos':>4} "
-        if has_corr:
-            header += f"{'corr':>5} "
-        header += f"{'obj':>8} {'cagr':>7} {'maxdd':>7} {'sharpe':>7}"
-        lines.append(header)
-        for _, row in top.iterrows():
-            line = (
-                f"  {int(row['kama_period']):>5} {int(row['lookback_period']):>5} "
-                f"{row['kama_buffer']:>7.4f} {int(row['top_n']):>5} "
-            )
-            if has_oos:
-                line += f"{int(row['oos_days']):>4} "
-            if has_corr:
-                line += f"{row['corr_threshold']:>5.2f} "
-            line += (
-                f"{row['objective']:>8.4f} {row['cagr']:>7.2%} "
-                f"{row['max_drawdown']:>7.2%} {row['sharpe']:>7.2f}"
-            )
-            lines.append(line)
-
-    # Overall verdict
-    lines.append("")
-    lines.append("=" * 70)
-    avg_score = np.mean(list(result.robustness_scores.values()))
-    if avg_score >= 0.8:
-        lines.append("VERDICT: Parameters are ROBUST. Current defaults are well-chosen.")
-    elif avg_score >= 0.5:
-        lines.append("VERDICT: Parameters are MODERATELY robust. Review sensitive params.")
-    else:
-        lines.append("VERDICT: Parameters are FRAGILE. Strategy may be overfit to specific values.")
-    lines.append("=" * 70)
-
-    return "\n".join(lines)
-
-
 def find_best_params(result: SensitivityResult) -> StrategyParams | None:
-    """Extract the best parameter combo from sensitivity results.
+    """Extract the best parameter combo from optimization results.
 
     Returns StrategyParams for the combo with highest objective,
     or None if no valid combo was found.

@@ -24,8 +24,9 @@ def test_fetch_etf_tickers():
 @patch("src.portfolio_sim.data._download_from_yfinance")
 def test_fetch_price_data_cache_hit(mock_download, tmp_path):
     """If cache exists, should skip download."""
-    mock_close = pd.DataFrame({"AAPL": [150.0]})
-    mock_open = pd.DataFrame({"AAPL": [149.0]})
+    dates = pd.date_range("2023-01-01", periods=1)
+    mock_close = pd.DataFrame({"AAPL": [150.0]}, index=dates)
+    mock_open = pd.DataFrame({"AAPL": [149.0]}, index=dates)
     
     # Create files in tmp_path
     close_cache = tmp_path / "close_prices.parquet"
@@ -44,8 +45,9 @@ def test_fetch_price_data_cache_hit(mock_download, tmp_path):
 @patch("src.portfolio_sim.data._download_from_yfinance")
 def test_fetch_price_data_refresh(mock_download, tmp_path):
     """If refresh=True, should download even if cache exists."""
-    mock_close = pd.DataFrame({"AAPL": [150.0]})
-    mock_open = pd.DataFrame({"AAPL": [149.0]})
+    dates = pd.date_range("2023-01-01", periods=1)
+    mock_close = pd.DataFrame({"AAPL": [150.0]}, index=dates)
+    mock_open = pd.DataFrame({"AAPL": [149.0]}, index=dates)
     mock_download.return_value = (mock_close, mock_open)
     
     with patch("src.portfolio_sim.data.CACHE_DIR", tmp_path):

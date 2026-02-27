@@ -12,14 +12,10 @@ def main(argv: list[str] | None = None) -> None:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    from src.portfolio_sim.commands import (
-        max_profit,
-        optimize,
-        walk_forward,
-    )
+    from src.portfolio_sim.commands import walk_forward
 
     commands: dict[str, object] = {}
-    for mod in [optimize, max_profit, walk_forward]:
+    for mod in [walk_forward]:
         mod.register(subparsers)
         commands[mod.COMMAND_NAME] = mod.run
 

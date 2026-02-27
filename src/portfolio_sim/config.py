@@ -153,9 +153,5 @@ SEARCH_SPACE = {
     "corr_threshold": {"type": "float", "low": 0.5, "high": 0.95, "step": 0.05},
 }
 
-SENSITIVITY_SPACE = SEARCH_SPACE
-MAX_PROFIT_SPACE = SEARCH_SPACE
-
-DEFAULT_N_TRIALS: int = 50
-DEFAULT_MAX_PROFIT_TRIALS: int = 50
+DEFAULT_N_TRIALS: int = 150
 

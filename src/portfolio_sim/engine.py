@@ -18,6 +18,7 @@ from tqdm import tqdm
 from src.portfolio_sim.alpha import get_buy_candidates
 from src.portfolio_sim.config import (
     COMMISSION_RATE,
+    RISK_FREE_RATE,
     SLIPPAGE_RATE,
     SPY_TICKER,
 )
@@ -26,6 +27,7 @@ from src.portfolio_sim.models import SimulationResult
 from src.portfolio_sim.params import StrategyParams
 
 COST_RATE = COMMISSION_RATE + SLIPPAGE_RATE
+DAILY_RF = (1 + RISK_FREE_RATE) ** (1 / 252) - 1
 
 
 def run_simulation(
@@ -153,6 +155,10 @@ def run_simulation(
                 })
             pending_trades = None
             pending_weights = None
+
+        # --- Cash earns risk-free rate (T-bill proxy) ---
+        if cash > 0:
+            cash *= 1 + DAILY_RF
 
         # --- Mark-to-market on Close ---
         equity_value = cash + sum(

@@ -12,6 +12,7 @@
 - Cache price data in `output/cache/`; download tickers in batches of 100.
 - Do not modify Optuna parameter search ranges without explicit user direction. Current confirmed ranges: `lookback_period` 20–100 step 20; `top_n` 5–30 step 5; `kama_buffer` 0.005–0.03 step 0.005.
 - Three strategy bugs that must never be reintroduced: (1) Rank-21 Trap — sell only when KAMA stop-loss triggers, not when a stock drops out of top-N; (2) SPY Dribble — use directional thresholds with `KAMA_BUFFER` for bull/bear hysteresis; (3) All-in Sizing — use strict slot-based sizing, not total-cash divided by number of buys.
+- Only one optimization mode exists: Walk-Forward Optimization (WFO). Sensitivity Analysis (standalone) and Max-Profit Search have been removed.
 - When shown a plan, trim unnecessary scope before implementing rather than building everything proposed.
 - Prefer concise plain language; avoid verbose documentation and duplicated sections.
 - Streamlit width: use `width="stretch"` instead of `use_container_width=True`; use `width="content"` instead of `use_container_width=False`.
@@ -22,9 +23,8 @@
 - Tech stack: Python 3.14, `uv` package manager (`pyproject.toml` + `uv.lock`), `yfinance`, `optuna`, `streamlit`, `pandas`, `numpy`. Deployed on Heroku via `Procfile`.
 - `src/portfolio_sim/config.py` is the single source of truth for tickers (`ETF_UNIVERSE`, `ASSET_CLASS_MAP`) and all fixed strategy parameters (`KAMA_PERIOD`, `LOOKBACK_PERIOD`, `TOP_N`, `KAMA_BUFFER`, `COMMISSION_RATE`, `SLIPPAGE_RATE`, `INITIAL_CAPITAL`, `RISK_FREE_RATE`).
 - Entry point for the dashboard: `uv run streamlit run dashboard.py` (multi-page Streamlit app with `pages/` subdirectory).
-- Key CLI scripts: `run_portfolio_sim.py` (single baseline sim + PNG chart), `quick_backtest.py` (fast console-only check, no file output, targets 4× SPY profitability ratio), `run_optimizer.py` (Optuna sensitivity, 200 trials TPE), `run_max_profit.py` (grid + Optuna search, saves CSV/TXT reports), `run_walk_forward.py` (walk-forward validation across time folds). All accept `--period` (default `5y`).
-- Output directories (all gitignored): `output/cache/` (Parquet price cache), `output/sim_*/`, `output/max_profit_*/`, `output/opt_*/`.
+- Key CLI: `uv run python -m src.portfolio_sim walk-forward` (Walk-Forward Optimization, the only optimization mode). Dashboard: `uv run streamlit run app.py`.
+- Output directories (all gitignored): `output/cache/` (Parquet price cache), `output/sim_*/`, `output/wfo_*/`.
 - Test runner: `uv run pytest`; coverage: `uv run pytest --cov=src/portfolio_sim`. Tests live in `tests/`.
-- Optimization metrics: `return` (maximize CAGR), `calmar` (CAGR/max-drawdown, default), `sharpe`.
-- Performance target: 4× SPY profitability ratio (enforced in `quick_backtest.py`).
+- Optimization objective: `sharpe` (Sharpe ratio) with drawdown cap. WFO uses Optuna TPE sampler per IS step.
 - `src/portfolio_sim/parallel.py` provides parallel execution utilities; `src/portfolio_sim/cli_utils.py` provides shared CLI argument helpers.
