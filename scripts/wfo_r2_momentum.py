@@ -74,14 +74,14 @@ class R2StrategyParams:
 R2_PARAM_NAMES = [f.name for f in fields(R2StrategyParams)]
 
 R2_SEARCH_SPACE: dict[str, dict] = {
-    "r2_lookback": {"type": "int", "low": 40, "high": 120, "step": 10},
-    "kama_asset_period": {"type": "categorical", "choices": [10, 20, 30, 40]},
-    "kama_spy_period": {"type": "categorical", "choices": [20, 30, 40]},
+    "r2_lookback": {"type": "int", "low": 20, "high": 120, "step": 20},
+    "kama_asset_period": {"type": "categorical", "choices": [10, 20, 30, 40, 50]},
+    "kama_spy_period": {"type": "categorical", "choices": [20, 30, 40, 50]},
     "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
     "gap_threshold": {"type": "float", "low": 0.10, "high": 0.20, "step": 0.025},
     "atr_period": {"type": "int", "low": 10, "high": 30, "step": 5},
-    "top_n": {"type": "int", "low": 5, "high": 15, "step": 5},
-    "rebal_period_weeks": {"type": "int", "low": 1, "high": 4, "step": 1},
+    "top_n": {"type": "int", "low": 5, "high": 25, "step": 5},
+    "rebal_period_weeks": {"type": "int", "low": 1, "high": 6, "step": 1},
 }
 
 _METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]

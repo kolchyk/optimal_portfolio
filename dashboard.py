@@ -1,9 +1,10 @@
-"""Streamlit dashboard for KAMA momentum strategy.
+"""Streamlit dashboard for R² Momentum strategy (Clenow-style).
 
 Run with: streamlit run dashboard.py
 """
 
 import logging
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -12,23 +13,23 @@ import scipy.optimize as sco
 import streamlit as st
 import structlog
 
+from scripts.compare_methods import run_backtest
 from src.portfolio_sim.cli_utils import filter_valid_tickers
 from src.portfolio_sim.config import (
-    CORR_THRESHOLD,
+    ATR_PERIOD,
     DEFAULT_N_TRIALS,
+    GAP_THRESHOLD,
     INITIAL_CAPITAL,
     KAMA_BUFFER,
     KAMA_PERIOD,
     KAMA_SPY_PERIOD,
-    LOOKBACK_PERIOD,
     OOS_DAYS,
+    R2_LOOKBACK,
+    REBAL_PERIOD_WEEKS,
+    RISK_FACTOR,
     TOP_N,
-    VOLATILITY_LOOKBACK,
 )
 from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
-from src.portfolio_sim.engine import run_simulation
-from src.portfolio_sim.models import SimulationResult
-from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import (
     compute_drawdown_series,
     compute_metrics,
@@ -36,6 +37,21 @@ from src.portfolio_sim.reporting import (
     compute_rolling_sharpe,
     compute_yearly_returns,
 )
+
+
+# ---------------------------------------------------------------------------
+# Result container (duck-typed replacement for old SimulationResult)
+# ---------------------------------------------------------------------------
+@dataclass
+class BacktestResult:
+    """Container for R² Momentum backtest output."""
+
+    equity: pd.Series
+    spy_equity: pd.Series
+    holdings_history: pd.DataFrame
+    cash_history: pd.Series
+    trade_log: list[dict] = field(default_factory=list)
+
 
 # ---------------------------------------------------------------------------
 # Theme / CSS
@@ -210,7 +226,7 @@ def _base_layout(**kwargs) -> dict:
 
 
 def plot_equity_curve(
-    result: SimulationResult, log_scale: bool = False
+    result: BacktestResult, log_scale: bool = False
 ) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(
@@ -218,7 +234,7 @@ def plot_equity_curve(
             x=result.equity.index,
             y=result.equity.values,
             mode="lines",
-            name="KAMA Momentum",
+            name="R\u00b2 Momentum",
             line=dict(color=COLOR_STRATEGY, width=2),
         )
     )
@@ -246,7 +262,7 @@ def plot_equity_curve(
     return fig
 
 
-def plot_drawdowns(result: SimulationResult) -> go.Figure:
+def plot_drawdowns(result: BacktestResult) -> go.Figure:
     dd_strat = compute_drawdown_series(result.equity) * 100
     dd_spy = compute_drawdown_series(result.spy_equity) * 100
     fig = go.Figure()
@@ -379,7 +395,7 @@ def plot_rolling_sharpe(
 
 
 def plot_holdings_pie(
-    result: SimulationResult, close_prices: pd.DataFrame
+    result: BacktestResult, close_prices: pd.DataFrame
 ) -> go.Figure:
     last_date = result.equity.index[-1]
     last_holdings = result.holdings_history.loc[last_date]
@@ -409,7 +425,7 @@ def plot_holdings_pie(
 
 
 def plot_holdings_over_time(
-    result: SimulationResult, close_prices: pd.DataFrame
+    result: BacktestResult, close_prices: pd.DataFrame
 ) -> go.Figure:
     idx = result.holdings_history.index
     aligned_close = close_prices.reindex(index=idx, columns=result.holdings_history.columns)
@@ -455,7 +471,7 @@ def compute_efficient_frontier(
     (CAGR) for consistent display alongside realized portfolio metrics.
 
     Returns (frontier_vols, frontier_rets, asset_stats) where:
-      - frontier_rets are CAGR-approximated returns (geometric ≈ arithmetic − σ²/2)
+      - frontier_rets are CAGR-approximated returns (geometric ~ arithmetic - sigma^2/2)
       - asset_stats is a DataFrame with columns ['ticker', 'ann_return', 'ann_vol']
         where 'ann_return' is the actual CAGR computed from price data.
     """
@@ -480,7 +496,6 @@ def compute_efficient_frontier(
     ann_vols = np.sqrt(np.diag(ann_cov))
 
     # Compute CAGR for each individual asset from actual price data
-    # (more accurate than the arithmetic-to-geometric approximation).
     asset_cagrs = []
     for col in valid_cols:
         col_prices = close_prices[col].dropna()
@@ -536,7 +551,6 @@ def compute_efficient_frontier(
     frontier_rets_arr = np.array(frontier_rets)
 
     # Convert frontier returns from arithmetic to geometric (CAGR).
-    # Standard approximation: geometric ≈ arithmetic − σ²/2
     frontier_rets_geo = frontier_rets_arr - 0.5 * frontier_vols_arr ** 2
 
     return frontier_vols_arr, frontier_rets_geo, asset_stats
@@ -544,7 +558,7 @@ def compute_efficient_frontier(
 
 def plot_risk_return_scatter(
     close_prices: pd.DataFrame,
-    result: SimulationResult | None = None,
+    result: BacktestResult | None = None,
 ) -> go.Figure:
     """Plot risk-return scatter of individual assets with efficient frontier."""
     asset_cols = [c for c in close_prices.columns if c != "SPY"]
@@ -617,7 +631,7 @@ def plot_risk_return_scatter(
                 textposition="top center",
                 textfont=dict(color=COLOR_PORTFOLIO, size=12),
                 hovertemplate=(
-                    "<b>KAMA Portfolio</b><br>"
+                    "<b>R\u00b2 Momentum Portfolio</b><br>"
                     "Volatility: %{x:.1f}%<br>"
                     "CAGR: %{y:.1f}%<br>"
                     "<extra></extra>"
@@ -658,7 +672,7 @@ def plot_risk_return_scatter(
     return fig
 
 
-def _render_trade_log(result: SimulationResult):
+def _render_trade_log(result: BacktestResult):
     if not result.trade_log:
         st.info("No trades recorded.")
         return
@@ -695,28 +709,28 @@ def _render_trade_log(result: SimulationResult):
 # ---------------------------------------------------------------------------
 def _render_sidebar() -> dict:
     with st.sidebar:
-        st.title("KAMA Momentum")
+        st.title("R\u00b2 Momentum")
 
         run_clicked = st.button(
-            "Запустить бэктест",
+            "\u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c \u0431\u044d\u043a\u0442\u0435\u0441\u0442",
             type="primary",
             width="stretch",
         )
 
-        # --- Группа 1: Данные и Оптимизация ---
-        with st.expander("Данные и Оптимизация", expanded=True):
+        # --- Group 1: Data & Optimization ---
+        with st.expander("\u0414\u0430\u043d\u043d\u044b\u0435 \u0438 \u041e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u044f", expanded=True):
             data_years = st.slider(
-                "Период данных (лет)",
+                "\u041f\u0435\u0440\u0438\u043e\u0434 \u0434\u0430\u043d\u043d\u044b\u0445 (\u043b\u0435\u0442)",
                 min_value=3, max_value=5, value=3,
-                help="Количество лет исторических данных для загрузки",
+                help="\u041a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u043b\u0435\u0442 \u0438\u0441\u0442\u043e\u0440\u0438\u0447\u0435\u0441\u043a\u0438\u0445 \u0434\u0430\u043d\u043d\u044b\u0445 \u0434\u043b\u044f \u0437\u0430\u0433\u0440\u0443\u0437\u043a\u0438",
             )
 
-            refresh = st.checkbox("Обновить кэш данных", value=False)
+            refresh = st.checkbox("\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c \u043a\u044d\u0448 \u0434\u0430\u043d\u043d\u044b\u0445", value=False)
 
             optimize_mode = st.selectbox(
-                "Режим оптимизации",
+                "\u0420\u0435\u0436\u0438\u043c \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u0438",
                 ["None", "Walk-Forward"],
-                help="Walk-Forward Optimization: оптимизация на IS-окне, валидация на OOS",
+                help="Walk-Forward Optimization: \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u044f \u043d\u0430 IS-\u043e\u043a\u043d\u0435, \u0432\u0430\u043b\u0438\u0434\u0430\u0446\u0438\u044f \u043d\u0430 OOS",
             )
 
             opt_n_trials = DEFAULT_N_TRIALS
@@ -725,94 +739,95 @@ def _render_sidebar() -> dict:
 
             if optimize_mode == "Walk-Forward":
                 opt_n_trials = st.slider(
-                    "Итерации Optuna (на шаг)", min_value=20, max_value=500,
+                    "\u0418\u0442\u0435\u0440\u0430\u0446\u0438\u0438 Optuna (\u043d\u0430 \u0448\u0430\u0433)", min_value=20, max_value=500,
                     value=DEFAULT_N_TRIALS, step=10,
                 )
                 opt_oos_days = st.slider(
-                    "OOS окно (дни)", min_value=10, max_value=63,
+                    "OOS \u043e\u043a\u043d\u043e (\u0434\u043d\u0438)", min_value=10, max_value=63,
                     value=OOS_DAYS, step=7,
-                    help="Окно проверки вне выборки на каждом шаге WFO.",
+                    help="\u041e\u043a\u043d\u043e \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0432\u043d\u0435 \u0432\u044b\u0431\u043e\u0440\u043a\u0438 \u043d\u0430 \u043a\u0430\u0436\u0434\u043e\u043c \u0448\u0430\u0433\u0435 WFO.",
                 )
                 opt_min_is_days = st.slider(
-                    "IS окно (дни)", min_value=63, max_value=252,
+                    "IS \u043e\u043a\u043d\u043e (\u0434\u043d\u0438)", min_value=63, max_value=252,
                     value=126, step=21,
-                    help="Минимальное окно оптимизации (in-sample).",
+                    help="\u041c\u0438\u043d\u0438\u043c\u0430\u043b\u044c\u043d\u043e\u0435 \u043e\u043a\u043d\u043e \u043e\u043f\u0442\u0438\u043c\u0438\u0437\u0430\u0446\u0438\u0438 (in-sample).",
                 )
 
-        # --- Группа 2: Параметры стратегии ---
-        with st.expander("Параметры стратегии", expanded=True):
+        # --- Group 2: Strategy Parameters ---
+        with st.expander("\u041f\u0430\u0440\u0430\u043c\u0435\u0442\u0440\u044b \u0441\u0442\u0440\u0430\u0442\u0435\u0433\u0438\u0438", expanded=True):
             initial_capital = st.number_input(
-                "Начальный капитал ($)",
+                "\u041d\u0430\u0447\u0430\u043b\u044c\u043d\u044b\u0439 \u043a\u0430\u043f\u0438\u0442\u0430\u043b ($)",
                 min_value=1_000.0, max_value=10_000_000.0,
                 value=float(INITIAL_CAPITAL), step=1_000.0,
-                help="Стартовая стоимость портфеля",
+                help="\u0421\u0442\u0430\u0440\u0442\u043e\u0432\u0430\u044f \u0441\u0442\u043e\u0438\u043c\u043e\u0441\u0442\u044c \u043f\u043e\u0440\u0442\u0444\u0435\u043b\u044f",
             )
 
             opt = st.session_state.get("optimized_params")
 
-            _default_top_n = opt.top_n if opt else TOP_N
-            top_n = st.slider(
-                "Кол-во активов (Top N)",
-                min_value=3, max_value=15, step=3,
-                value=min(_default_top_n, 15),
-                help="Количество позиций, удерживаемых одновременно",
+            _default_r2_lb = opt.r2_lookback if opt else R2_LOOKBACK
+            r2_lookback = st.slider(
+                "R\u00b2 Lookback (\u0434\u043d\u0438)", min_value=20, max_value=120, step=20,
+                value=_default_r2_lb,
+                help="\u041e\u043a\u043d\u043e OLS-\u0440\u0435\u0433\u0440\u0435\u0441\u0441\u0438\u0438 \u0434\u043b\u044f \u0441\u043a\u043e\u0440\u0438\u043d\u0433\u0430 \u043c\u043e\u043c\u0435\u043d\u0442\u0443\u043c\u0430 (Clenow)",
             )
 
-            _default_kama = opt.kama_period if opt else KAMA_PERIOD
-            kama_period = st.slider(
-                "Период KAMA", min_value=10, max_value=50, value=_default_kama,
-                help="Окно адаптивной скользящей средней (торговые дни)",
+            _default_top_n = opt.top_n if opt else TOP_N
+            top_n = st.slider(
+                "\u041a\u043e\u043b-\u0432\u043e \u0430\u043a\u0442\u0438\u0432\u043e\u0432 (Top N)",
+                min_value=5, max_value=25, step=5,
+                value=min(_default_top_n, 25),
+                help="\u041a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u043f\u043e\u0437\u0438\u0446\u0438\u0439, \u0443\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u043c\u044b\u0445 \u043e\u0434\u043d\u043e\u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e",
+            )
+
+            _default_kama = opt.kama_asset_period if opt else KAMA_PERIOD
+            kama_asset_period = st.slider(
+                "\u041f\u0435\u0440\u0438\u043e\u0434 KAMA (\u0430\u043a\u0442\u0438\u0432)", min_value=10, max_value=50, value=_default_kama,
+                help="KAMA \u0434\u043b\u044f \u0438\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u0442\u0440\u0435\u043d\u0434-\u0444\u0438\u043b\u044c\u0442\u0440\u0430 (\u0442\u043e\u0440\u0433\u043e\u0432\u044b\u0435 \u0434\u043d\u0438)",
             )
 
             _default_kama_spy = opt.kama_spy_period if opt else KAMA_SPY_PERIOD
             kama_spy_period = st.slider(
-                "Период KAMA (SPY)", min_value=10, max_value=60,
+                "\u041f\u0435\u0440\u0438\u043e\u0434 KAMA (SPY)", min_value=10, max_value=60,
                 value=_default_kama_spy,
-                help="Период KAMA для режимного фильтра SPY (торговые дни)",
-            )
-
-            _default_lookback = opt.lookback_period if opt else LOOKBACK_PERIOD
-            lookback_period = st.slider(
-                "Окно моментума", min_value=20, max_value=120, step=10,
-                value=_default_lookback,
-                help="Окно оценки моментума (торговые дни)",
+                help="\u041f\u0435\u0440\u0438\u043e\u0434 KAMA \u0434\u043b\u044f \u0440\u0435\u0436\u0438\u043c\u043d\u043e\u0433\u043e \u0444\u0438\u043b\u044c\u0442\u0440\u0430 SPY (\u0442\u043e\u0440\u0433\u043e\u0432\u044b\u0435 \u0434\u043d\u0438)",
             )
 
             _default_buffer = opt.kama_buffer if opt else KAMA_BUFFER
             kama_buffer = st.slider(
-                "Буфер KAMA", min_value=0.005, max_value=0.05,
+                "\u0411\u0443\u0444\u0435\u0440 KAMA", min_value=0.005, max_value=0.05,
                 value=float(_default_buffer), step=0.005, format="%.3f",
-                help="Порог гистерезиса для переключения режимов",
+                help="\u041f\u043e\u0440\u043e\u0433 \u0433\u0438\u0441\u0442\u0435\u0440\u0435\u0437\u0438\u0441\u0430 \u0434\u043b\u044f \u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f \u0440\u0435\u0436\u0438\u043c\u043e\u0432",
             )
 
-            use_risk_adjusted = st.toggle(
-                "Риск-адаптированный моментум",
-                value=True,
-                help="Ранжирование по доходность x ER2 (Efficiency Ratio). "
-                     "Штрафует хаотичное движение, "
-                     "предпочитает плавные восходящие тренды.",
+            _default_rebal = opt.rebal_period_weeks if opt else REBAL_PERIOD_WEEKS
+            rebal_period_weeks = st.slider(
+                "\u041f\u0435\u0440\u0438\u043e\u0434 \u0440\u0435\u0431\u0430\u043b\u0430\u043d\u0441\u0438\u0440\u043e\u0432\u043a\u0438 (\u043d\u0435\u0434.)",
+                min_value=1, max_value=6, step=1,
+                value=_default_rebal,
+                help="\u041a\u0430\u043a \u0447\u0430\u0441\u0442\u043e \u043f\u0435\u0440\u0435\u0441\u043c\u0430\u0442\u0440\u0438\u0432\u0430\u0435\u043c \u043f\u043e\u0440\u0442\u0444\u0435\u043b\u044c (lazy-hold \u0440\u0435\u0431\u0430\u043b\u0430\u043d\u0441\u0438\u0440\u043e\u0432\u043a\u0430)",
             )
 
-            weighting_mode = st.selectbox(
-                "Режим взвешивания",
-                ["equal_weight", "risk_parity"],
-                help="equal_weight: равные веса для каждой позиции. "
-                     "risk_parity: обратная волатильность (низковолатильные активы получают больший вес).",
+        # --- Group 3: Advanced Settings ---
+        with st.expander("\u0420\u0430\u0441\u0448\u0438\u0440\u0435\u043d\u043d\u044b\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438", expanded=False):
+            _default_gap = opt.gap_threshold if opt else GAP_THRESHOLD
+            gap_threshold = st.slider(
+                "\u041f\u043e\u0440\u043e\u0433 \u0433\u044d\u043f\u0430", min_value=0.10, max_value=0.25,
+                value=float(_default_gap), step=0.025, format="%.3f",
+                help="\u0418\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u0430\u043a\u0442\u0438\u0432\u043e\u0432 \u0441 \u043e\u0434\u043d\u043e\u0434\u043d\u0435\u0432\u043d\u044b\u043c \u0433\u044d\u043f\u043e\u043c > \u043f\u043e\u0440\u043e\u0433\u0430 (\u0444\u0438\u043b\u044c\u0442\u0440 \u0441\u043f\u043b\u0438\u0442\u043e\u0432/\u043e\u0442\u0447\u0451\u0442\u043e\u0432)",
             )
 
-        # --- Группа 3: Расширенные настройки ---
-        with st.expander("Расширенные настройки", expanded=False):
-            _default_corr = opt.corr_threshold if opt else CORR_THRESHOLD
-            corr_threshold = st.slider(
-                "Порог корреляции", min_value=0.50, max_value=1.0,
-                value=float(_default_corr), step=0.05, format="%.2f",
-                help="Макс. корреляция с текущими позициями (1.0 = фильтр выключен)",
+            _default_atr = opt.atr_period if opt else ATR_PERIOD
+            atr_period = st.slider(
+                "\u041f\u0435\u0440\u0438\u043e\u0434 ATR (\u0434\u043d\u0438)", min_value=10, max_value=30, step=5,
+                value=_default_atr,
+                help="\u041e\u043a\u043d\u043e ATR \u0434\u043b\u044f \u0440\u0430\u0441\u0447\u0451\u0442\u0430 \u0440\u0430\u0437\u043c\u0435\u0440\u0430 \u043f\u043e\u0437\u0438\u0446\u0438\u0439 (ATR risk parity)",
             )
 
-            vol_lookback = st.slider(
-                "Окно волатильности (дни)", min_value=10, max_value=60,
-                value=VOLATILITY_LOOKBACK,
-                help="Окно для расчета весов Risk Parity (обратная волатильность)",
+            _default_rf = opt.risk_factor if opt else RISK_FACTOR
+            risk_factor = st.slider(
+                "Risk Factor", min_value=0.0005, max_value=0.002,
+                value=float(_default_rf), step=0.0005, format="%.4f",
+                help="\u0420\u0438\u0441\u043a \u043d\u0430 \u043f\u043e\u0437\u0438\u0446\u0438\u044e \u0432 \u0434\u0435\u043d\u044c (Clenow default: 0.001 = 10 bps)",
             )
 
     return {
@@ -823,15 +838,15 @@ def _render_sidebar() -> dict:
         "opt_oos_days": opt_oos_days,
         "opt_min_is_days": opt_min_is_days,
         "initial_capital": float(initial_capital),
+        "r2_lookback": r2_lookback,
         "top_n": top_n,
-        "kama_period": kama_period,
+        "kama_asset_period": kama_asset_period,
         "kama_spy_period": kama_spy_period,
-        "lookback_period": lookback_period,
         "kama_buffer": kama_buffer,
-        "use_risk_adjusted": use_risk_adjusted,
-        "weighting_mode": weighting_mode,
-        "corr_threshold": corr_threshold,
-        "vol_lookback": vol_lookback,
+        "rebal_period_weeks": rebal_period_weeks,
+        "gap_threshold": gap_threshold,
+        "atr_period": atr_period,
+        "risk_factor": risk_factor,
         "run_clicked": run_clicked,
     }
 
@@ -868,21 +883,19 @@ def _render_optimization_results() -> None:
             st.dataframe(steps_df.style.format(fmt), width="stretch")
 
             # Degradation
-            import numpy as np
             is_cagrs = [s.is_metrics.get("cagr", 0) for s in wfo.steps]
             oos_cagrs = [s.oos_metrics.get("cagr", 0) for s in wfo.steps]
             avg_is = np.mean(is_cagrs)
             avg_oos = np.mean(oos_cagrs)
             if avg_is > 0:
                 degradation = 1.0 - avg_oos / avg_is
-                verdict = "Acceptable" if degradation <= 0.5 else "High — possible overfitting"
+                verdict = "Acceptable" if degradation <= 0.5 else "High \u2014 possible overfitting"
                 st.metric("IS/OOS Degradation", f"{degradation:.1%}", verdict)
             else:
                 st.metric("IS/OOS Degradation", "N/A")
 
             # Stitched OOS equity chart
             st.subheader("Stitched Out-of-Sample Equity")
-            import plotly.graph_objects as go
             fig = go.Figure()
             fig.add_trace(go.Scatter(
                 x=wfo.stitched_equity.index,
@@ -908,9 +921,10 @@ def _render_optimization_results() -> None:
             fp = wfo.final_params
             st.info(
                 f"Recommended live params: "
-                f"KAMA={fp.kama_period}, KAMA SPY={fp.kama_spy_period}, "
-                f"Lookback={fp.lookback_period}, "
-                f"Buffer={fp.kama_buffer}, Top N={fp.top_n}"
+                f"R\u00b2 LB={fp.r2_lookback}, KAMA Asset={fp.kama_asset_period}, "
+                f"KAMA SPY={fp.kama_spy_period}, "
+                f"Buffer={fp.kama_buffer}, Top N={fp.top_n}, "
+                f"Rebal={fp.rebal_period_weeks}w"
             )
 
 
@@ -926,10 +940,10 @@ def main():
     _inject_css()
     sidebar = _render_sidebar()
 
-    st.title("KAMA Momentum Strategy")
+    st.title("R\u00b2 Momentum Strategy")
 
     st.caption(
-        "Long/Cash \u00b7 145 Cross-Asset ETFs \u00b7 ER\u00b2 Momentum \u00b7 KAMA Stop-Loss"
+        "Long/Cash \u00b7 145 Cross-Asset ETFs \u00b7 R\u00b2 Momentum \u00b7 ATR Risk Parity \u00b7 KAMA Trend Filter"
     )
 
     if sidebar["run_clicked"]:
@@ -942,15 +956,21 @@ def main():
             cache_suffix=cache_suffix, period=period,
         )
 
-        min_days = int(sidebar["data_years"] * 252 * 0.6)
+        min_days = max(sidebar["r2_lookback"], sidebar["kama_asset_period"],
+                       sidebar["kama_spy_period"]) + 10
         valid = filter_valid_tickers(close_prices, min_days)
 
-        # Base param kwargs shared across all branches
-        common_kwargs = dict(
-            use_risk_adjusted=sidebar["use_risk_adjusted"],
-            volatility_lookback=sidebar["vol_lookback"],
-            corr_threshold=sidebar["corr_threshold"],
-            weighting_mode=sidebar["weighting_mode"],
+        # R² backtest kwargs
+        bt_kwargs = dict(
+            r2_lookback=sidebar["r2_lookback"],
+            top_n=sidebar["top_n"],
+            kama_asset_period=sidebar["kama_asset_period"],
+            kama_spy_period=sidebar["kama_spy_period"],
+            kama_buffer=sidebar["kama_buffer"],
+            rebal_period_weeks=sidebar["rebal_period_weeks"],
+            gap_threshold=sidebar["gap_threshold"],
+            atr_period=sidebar["atr_period"],
+            risk_factor=sidebar["risk_factor"],
         )
 
         # --- Optimization dispatch ---
@@ -958,14 +978,14 @@ def main():
         opt_mode = sidebar["optimize_mode"]
 
         if opt_mode == "Walk-Forward":
-            from src.portfolio_sim.walk_forward import run_walk_forward
+            from scripts.wfo_r2_momentum import run_r2_walk_forward
 
             n_trials = sidebar["opt_n_trials"]
             with st.spinner(
                 f"Walk-forward optimization ({n_trials} trials/step, "
                 f"IS={sidebar['opt_min_is_days']}d, OOS={sidebar['opt_oos_days']}d)..."
             ):
-                wfo_result = run_walk_forward(
+                wfo_result = run_r2_walk_forward(
                     close_prices, open_prices, valid,
                     sidebar["initial_capital"],
                     n_trials_per_step=n_trials,
@@ -978,46 +998,41 @@ def main():
         if best is not None:
             st.session_state["optimized_params"] = best
             st.toast(
-                f"Optimal: KAMA={best.kama_period}, "
-                f"KAMA SPY={best.kama_spy_period}, "
-                f"Lookback={best.lookback_period}, "
-                f"Buffer={best.kama_buffer}, "
-                f"Top N={best.top_n}",
-                icon="✅",
+                f"Optimal: R\u00b2 LB={best.r2_lookback}, "
+                f"KAMA={best.kama_asset_period}, "
+                f"SPY={best.kama_spy_period}, "
+                f"Top N={best.top_n}, "
+                f"Rebal={best.rebal_period_weeks}w",
+                icon="\u2705",
             )
-            common_kwargs.update(
-                kama_period=best.kama_period,
+            bt_kwargs.update(
+                r2_lookback=best.r2_lookback,
+                kama_asset_period=best.kama_asset_period,
                 kama_spy_period=best.kama_spy_period,
-                lookback_period=best.lookback_period,
-                top_n=best.top_n,
                 kama_buffer=best.kama_buffer,
-                weighting_mode=best.weighting_mode,
+                top_n=best.top_n,
+                rebal_period_weeks=best.rebal_period_weeks,
+                gap_threshold=best.gap_threshold,
+                atr_period=best.atr_period,
+                risk_factor=best.risk_factor,
             )
         elif opt_mode != "None":
             st.warning("Optimization found no valid combinations. Using manual parameters.")
-            common_kwargs.update(
-                kama_period=sidebar["kama_period"],
-                kama_spy_period=sidebar["kama_spy_period"],
-                lookback_period=sidebar["lookback_period"],
-                top_n=sidebar["top_n"],
-                kama_buffer=sidebar["kama_buffer"],
-            )
-        else:
-            common_kwargs.update(
-                kama_period=sidebar["kama_period"],
-                kama_spy_period=sidebar["kama_spy_period"],
-                lookback_period=sidebar["lookback_period"],
-                top_n=sidebar["top_n"],
-                kama_buffer=sidebar["kama_buffer"],
-            )
 
-        params = StrategyParams(**common_kwargs)
-
-        with st.spinner(f"Running simulation on {len(valid)} tickers..."):
-            result = run_simulation(
+        with st.spinner(f"Running R\u00b2 Momentum simulation on {len(valid)} tickers..."):
+            equity, spy_equity, holdings_history, cash_history, trade_log = run_backtest(
                 close_prices, open_prices, valid,
-                sidebar["initial_capital"], params=params,
+                initial_capital=sidebar["initial_capital"],
+                **bt_kwargs,
             )
+
+        result = BacktestResult(
+            equity=equity,
+            spy_equity=spy_equity,
+            holdings_history=holdings_history,
+            cash_history=cash_history,
+            trade_log=trade_log,
+        )
 
         st.session_state["result"] = result
         st.session_state["close_prices"] = close_prices
@@ -1026,7 +1041,7 @@ def main():
         st.info("Click **Run Backtest** in the sidebar to start.")
         return
 
-    result: SimulationResult = st.session_state["result"]
+    result: BacktestResult = st.session_state["result"]
     close_prices: pd.DataFrame = st.session_state["close_prices"]
 
     strat_m = compute_metrics(result.equity)
@@ -1114,7 +1129,7 @@ def main():
 
 if __name__ == "__main__":
     st.set_page_config(
-        page_title="KAMA Momentum Strategy",
+        page_title="R\u00b2 Momentum Strategy",
         page_icon="\U0001F4C8",
         layout="wide",
         initial_sidebar_state="expanded",

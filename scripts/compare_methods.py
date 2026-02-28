@@ -291,7 +291,7 @@ def run_backtest(
     risk_factor: float = RISK_FACTOR,
     kama_cache_ext: dict[str, pd.Series] | None = None,
     spy_kama_ext: pd.Series | None = None,
-) -> tuple[pd.Series, list[tuple[pd.Timestamp, list[str]]], list[dict]]:
+) -> tuple[pd.Series, pd.Series, pd.DataFrame, pd.Series, list[dict]]:
     """Run Clenow R² Momentum backtest with KAMA filters and incremental rebalancing.
 
     Lazy-hold approach (following engine.py pattern):
@@ -300,14 +300,17 @@ def run_backtest(
     - Positions that lost rank but maintain their trend are kept
 
     Returns:
-        (equity_series, selection_history, trade_log)
+        (equity, spy_equity, holdings_history, cash_history, trade_log)
     """
     if warmup_days is None:
         warmup_days = max(r2_lookback, kama_spy_period, kama_asset_period) + 10
 
     sim_dates = close_prices.index[warmup_days:]
     if len(sim_dates) == 0:
-        return pd.Series(dtype=float), [], []
+        empty_eq = pd.Series(dtype=float)
+        empty_hh = pd.DataFrame(dtype=float)
+        empty_ch = pd.Series(dtype=float)
+        return empty_eq, empty_eq, empty_hh, empty_ch, []
 
     # Use pre-computed KAMA if provided, else compute
     if kama_cache_ext is not None and spy_kama_ext is not None:
@@ -332,7 +335,8 @@ def run_backtest(
     cash = initial_capital
     shares: dict[str, float] = {}
     equity_values: list[float] = []
-    selection_history: list[tuple[pd.Timestamp, list[str]]] = []
+    cash_values: list[float] = []
+    holdings_snapshots: list[dict[str, float]] = []
     trade_log: list[dict] = []
 
     # Pending trades: computed on Close(T), executed on Open(T+1)
@@ -411,10 +415,14 @@ def run_backtest(
             shares.get(t, 0) * daily_close.get(t, 0.0) for t in shares
         )
         equity_values.append(equity)
+        cash_values.append(cash)
+        holdings_snapshots.append(dict(shares))
 
         if equity <= 0:
             remaining = len(sim_dates) - len(equity_values)
             equity_values.extend([0.0] * remaining)
+            cash_values.extend([0.0] * remaining)
+            holdings_snapshots.extend([{} for _ in range(remaining)])
             break
 
         # --- On rebalance-check date: compute signals for lazy-hold ---
@@ -482,15 +490,30 @@ def run_backtest(
                 pending_sells = sells_to_do if sells_to_do else None
                 pending_buys = buys_to_do if buys_to_do else None
                 execute_on_next_open = True
-                final_holdings = list(kept_positions | set(buys_to_do.keys()))
-                selection_history.append((date, final_holdings))
 
     n = len(equity_values)
-    return (
-        pd.Series(equity_values, index=sim_dates[:n]),
-        selection_history,
-        trade_log,
-    )
+    equity_series = pd.Series(equity_values, index=sim_dates[:n])
+
+    # SPY benchmark
+    spy_close = close_prices[SPY_TICKER].reindex(sim_dates[:n]).ffill()
+    if not spy_close.empty and spy_close.iloc[0] > 0:
+        spy_equity = initial_capital * (spy_close / spy_close.iloc[0])
+    else:
+        spy_equity = pd.Series(initial_capital, index=sim_dates[:n])
+
+    # Holdings history as DataFrame
+    all_held_tickers = sorted({t for snap in holdings_snapshots for t in snap})
+    holdings_data = {
+        t: [snap.get(t, 0.0) for snap in holdings_snapshots]
+        for t in all_held_tickers
+    }
+    holdings_history = pd.DataFrame(
+        holdings_data, index=sim_dates[:n],
+    ) if all_held_tickers else pd.DataFrame(index=sim_dates[:n])
+
+    cash_history = pd.Series(cash_values, index=sim_dates[:n])
+
+    return equity_series, spy_equity, holdings_history, cash_history, trade_log
 
 
 # ---------------------------------------------------------------------------
@@ -715,7 +738,7 @@ def main() -> None:
 
     # 2. Run backtest
     print("\nRunning R² Momentum backtest...")
-    equity, sel_hist, trade_log = run_backtest(
+    equity, spy_equity, _hh, _ch, trade_log = run_backtest(
         close_prices, open_prices, tickers,
         initial_capital=INITIAL_CAPITAL, top_n=TOP_N,
         rebal_period_weeks=REBAL_PERIOD_WEEKS,
@@ -723,14 +746,6 @@ def main() -> None:
     m = compute_metrics(equity)
     print(f"  CAGR: {m['cagr']:.1%}  Sharpe: {m['sharpe']:.2f}  MaxDD: {m['max_drawdown']:.1%}")
     print(f"  Total trades: {len(trade_log)}")
-
-    # 3. SPY benchmark
-    warmup_days = max(R2_LOOKBACK, KAMA_SPY, KAMA_ASSET) + 10
-    sim_dates = close_prices.index[warmup_days:]
-    spy_close = close_prices[SPY_TICKER]
-    spy_equity = INITIAL_CAPITAL * (
-        spy_close.loc[sim_dates] / spy_close.loc[sim_dates].iloc[0]
-    )
 
     # 4. Report
     report = format_report(equity, spy_equity)
@@ -749,9 +764,7 @@ def main() -> None:
     # 6. Plots
     print("\nGenerating plots...")
     plot_equity_and_drawdown(equity, spy_equity, OUTPUT_DIR)
-    plot_holdings_over_time(sel_hist, OUTPUT_DIR)
     plot_turnover(trade_log, OUTPUT_DIR)
-    plot_asset_frequency(sel_hist, OUTPUT_DIR)
 
     print(f"\nAll outputs saved to {OUTPUT_DIR}/")
     print("Done.")
