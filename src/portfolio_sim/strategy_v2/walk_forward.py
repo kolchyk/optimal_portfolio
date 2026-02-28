@@ -1,13 +1,7 @@
-"""Walk-Forward Optimization (WFO) for KAMA momentum strategy.
+"""V2 Walk-Forward Optimization — vol-targeted KAMA momentum.
 
-Splits the timeline into fixed-size in-sample (IS) windows for parameter
-optimization and fixed out-of-sample (OOS) windows for validation.
-This prevents overfitting by never testing parameters on data they were
-trained on.
-
-Sliding WFO: both IS start and IS end advance by *oos_days* each step,
-keeping the IS window at a constant *min_is_days* width.  The final
-step's optimized parameters are the recommended "live" parameters.
+Reuses schedule generation and equity-curve stitching from the base
+walk_forward module.  Swaps in the V2 engine, optimizer, and params.
 """
 
 from __future__ import annotations
@@ -19,97 +13,55 @@ import numpy as np
 import pandas as pd
 import structlog
 
-from src.portfolio_sim.config import INITIAL_CAPITAL, SEARCH_SPACE
-from src.portfolio_sim.engine import run_simulation
+from src.portfolio_sim.config import INITIAL_CAPITAL
 from src.portfolio_sim.models import WFOResult, WFOStep
 from src.portfolio_sim.optimizer import (
     _get_kama_periods_from_space,
-    compute_objective,
-    find_best_params,
     precompute_kama_caches,
-    run_sensitivity,
 )
-from src.portfolio_sim.parallel import init_eval_worker
-from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics
+from src.portfolio_sim.walk_forward import (
+    _stitch_equity_curves,
+    generate_wfo_schedule,
+)
+
+from src.portfolio_sim.strategy_v2.config import (
+    V2_MAX_DD_LIMIT,
+    V2_SEARCH_SPACE,
+)
+from src.portfolio_sim.strategy_v2.engine import run_simulation_v2
+from src.portfolio_sim.strategy_v2.optimizer import (
+    find_best_params_v2,
+    run_sensitivity_v2,
+)
+from src.portfolio_sim.strategy_v2.parallel import init_eval_worker_v2
+from src.portfolio_sim.strategy_v2.params import StrategyParamsV2
 
 log = structlog.get_logger()
 
 
-# ---------------------------------------------------------------------------
-# Schedule generation
-# ---------------------------------------------------------------------------
-def generate_wfo_schedule(
-    dates: pd.DatetimeIndex,
-    min_is_days: int = 126,
-    oos_days: int = 21,
-) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
-    """Generate (is_start, is_end, oos_start, oos_end) tuples.
-
-    Sliding WFO: IS window is always *min_is_days* wide and advances by
-    *oos_days* each step.
-
-    Returns empty list if there is not enough data for even one step.
-    """
-    total = len(dates)
-    schedule: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]] = []
-    is_end_idx = min_is_days - 1
-
-    while is_end_idx + oos_days < total:
-        is_start = dates[is_end_idx - min_is_days + 1]
-        is_end = dates[is_end_idx]
-        oos_start = dates[is_end_idx + 1]
-        oos_end_idx = min(is_end_idx + oos_days, total - 1)
-        oos_end = dates[oos_end_idx]
-
-        schedule.append((is_start, is_end, oos_start, oos_end))
-        is_end_idx += oos_days
-
-    return schedule
-
-
-# ---------------------------------------------------------------------------
-# Main walk-forward optimization
-# ---------------------------------------------------------------------------
-def run_walk_forward(
+def run_walk_forward_v2(
     close_prices: pd.DataFrame,
     open_prices: pd.DataFrame,
     tickers: list[str],
     initial_capital: float = INITIAL_CAPITAL,
-    base_params: StrategyParams | None = None,
+    base_params: StrategyParamsV2 | None = None,
     space: dict[str, dict] | None = None,
-    n_trials_per_step: int = 50,
+    n_trials_per_step: int = 100,
     n_workers: int | None = None,
     min_is_days: int | None = None,
     oos_days: int | None = None,
-    max_dd_limit: float = 0.30,
+    max_dd_limit: float = V2_MAX_DD_LIMIT,
     kama_caches: dict[int, dict[str, pd.Series]] | None = None,
     executor: ProcessPoolExecutor | None = None,
 ) -> WFOResult:
-    """Run sliding walk-forward optimization.
-
-    For each step:
-      1. Optimize parameters on the IS (in-sample) data slice.
-      2. Run simulation with optimized params on the OOS (out-of-sample)
-         data slice (with warmup prefix for indicator computation).
-      3. Record IS and OOS metrics.
-
-    After all steps the OOS equity curves are stitched together
-    to produce the aggregate out-of-sample performance.
-
-    When *min_is_days* / *oos_days* are ``None`` they default to
-    126 (6 months) and 21 (~1 month) respectively — allowing
-    frequent re-optimization every few weeks.
-
-    When *kama_caches* and/or *executor* are provided, they are reused
-    across all WFO steps to avoid redundant computation and pool startup.
-    """
-    base_params = base_params or StrategyParams()
-    space = space or SEARCH_SPACE
+    """Run sliding walk-forward optimisation with V2 vol-targeted engine."""
+    base_params = base_params or StrategyParamsV2()
+    space = space or V2_SEARCH_SPACE
     if min_is_days is None:
-        min_is_days = 126   # 6 months — reactive to current regime
+        min_is_days = 126
     if oos_days is None:
-        oos_days = 21       # ~1 month — frequent re-optimization
+        oos_days = 21
     if not n_workers or n_workers < 1:
         n_workers = os.cpu_count()
 
@@ -118,33 +70,33 @@ def run_walk_forward(
 
     if not schedule:
         raise ValueError(
-            f"Not enough data for WFO: {len(dates)} trading days available, "
+            f"Not enough data for V2 WFO: {len(dates)} trading days available, "
             f"need at least {min_is_days + oos_days} "
             f"(min_is_days={min_is_days} + oos_days={oos_days})."
         )
 
     log.info(
-        "wfo_start",
+        "v2_wfo_start",
         n_steps=len(schedule),
         min_is_days=min_is_days,
         oos_days=oos_days,
         n_trials_per_step=n_trials_per_step,
     )
 
-    # Pre-compute KAMA once on full data for all WFO steps (skip if provided)
+    # Pre-compute KAMA once on full data
     if kama_caches is None:
         kama_periods = _get_kama_periods_from_space(space)
         kama_caches = precompute_kama_caches(
             close_prices, tickers, kama_periods, n_workers,
         )
-        log.info("wfo_kama_precomputed", n_periods=len(kama_caches))
+        log.info("v2_wfo_kama_precomputed", n_periods=len(kama_caches))
 
-    # Create a persistent executor for all WFO steps (skip if provided)
+    # Create persistent executor
     own_executor = executor is None
     if own_executor:
         executor = ProcessPoolExecutor(
             max_workers=n_workers,
-            initializer=init_eval_worker,
+            initializer=init_eval_worker_v2,
             initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
         )
 
@@ -153,7 +105,7 @@ def run_walk_forward(
     try:
         for step_idx, (is_start, is_end, oos_start, oos_end) in enumerate(schedule):
             log.info(
-                "wfo_step_start",
+                "v2_wfo_step_start",
                 step=step_idx + 1,
                 is_range=f"{is_start.date()}..{is_end.date()}",
                 oos_range=f"{oos_start.date()}..{oos_end.date()}",
@@ -167,15 +119,12 @@ def run_walk_forward(
                 if t in close_is.columns and len(close_is[t].dropna()) >= min_is_days // 2
             ]
 
-            # --- 2. Optimize on IS ---
-            # Relax the min-equity-days threshold for short IS windows:
-            # warmup consumes bars before trading starts, so with short IS
-            # windows the equity curve can be much shorter than 60 days.
-            max_warmup = base_params.warmup  # conservative upper bound
+            # --- 2. Optimise on IS ---
+            max_warmup = base_params.warmup
             available_equity_days = max(1, len(close_is) - max_warmup)
             min_n_days_is = max(5, min(available_equity_days, 60))
 
-            sens_result = run_sensitivity(
+            sens_result = run_sensitivity_v2(
                 close_is, open_is, valid_is,
                 initial_capital,
                 base_params=base_params,
@@ -188,22 +137,23 @@ def run_walk_forward(
                 executor=executor,
             )
 
-            best_params = find_best_params(sens_result)
+            best_params = find_best_params_v2(sens_result)
             if best_params is None:
-                log.warning("wfo_step_no_valid_params", step=step_idx + 1)
+                log.warning("v2_wfo_step_no_valid_params", step=step_idx + 1)
                 best_params = base_params
 
-            # Run IS simulation with best params for IS metrics
+            # IS metrics
             is_kama_cache = kama_caches.get(best_params.kama_period)
-            is_sim = run_simulation(
+            is_sim = run_simulation_v2(
                 close_is, open_is, valid_is, initial_capital,
                 params=best_params,
                 kama_cache=is_kama_cache,
             )
             is_metrics = compute_metrics(is_sim.equity)
 
-            # --- 3. Run OOS simulation with warmup prefix ---
-            warmup = best_params.warmup
+            # --- 3. Run OOS simulation with extended warmup ---
+            # Extra warmup for vol-targeting estimator calibration
+            warmup = best_params.warmup + best_params.portfolio_vol_lookback
             oos_start_loc = dates.get_loc(oos_start)
             warmup_start_idx = max(0, oos_start_loc - warmup)
             oos_end_loc = dates.get_loc(oos_end)
@@ -217,18 +167,18 @@ def run_walk_forward(
             ]
 
             oos_kama_cache = kama_caches.get(best_params.kama_period)
-            oos_sim = run_simulation(
+            oos_sim = run_simulation_v2(
                 close_oos_warm, open_oos_warm, valid_oos, initial_capital,
                 params=best_params,
                 kama_cache=oos_kama_cache,
             )
 
-            # Trim equity to only the OOS period
+            # Trim to OOS period only
             oos_equity = oos_sim.equity.loc[oos_start:oos_end]
             oos_spy_equity = oos_sim.spy_equity.loc[oos_start:oos_end]
 
             if oos_equity.empty:
-                log.warning("wfo_step_empty_oos", step=step_idx + 1)
+                log.warning("v2_wfo_step_empty_oos", step=step_idx + 1)
                 continue
 
             oos_metrics = compute_metrics(oos_equity)
@@ -248,17 +198,17 @@ def run_walk_forward(
             steps.append(step)
 
             log.info(
-                "wfo_step_done",
+                "v2_wfo_step_done",
                 step=step_idx + 1,
-                is_cagr=f"{is_metrics.get('cagr', 0):.2%}",
-                oos_cagr=f"{oos_metrics.get('cagr', 0):.2%}",
+                is_sharpe=f"{is_metrics.get('sharpe', 0):.2f}",
+                oos_sharpe=f"{oos_metrics.get('sharpe', 0):.2f}",
             )
     finally:
         if own_executor:
             executor.shutdown(wait=True)
 
     if not steps:
-        raise ValueError("WFO produced no valid steps.")
+        raise ValueError("V2 WFO produced no valid steps.")
 
     # --- 4. Stitch OOS equity curves ---
     stitched_equity = _stitch_equity_curves(
@@ -272,8 +222,9 @@ def run_walk_forward(
     final_params = steps[-1].optimized_params
 
     log.info(
-        "wfo_done",
+        "v2_wfo_done",
         n_steps=len(steps),
+        oos_sharpe=f"{oos_metrics.get('sharpe', 0):.2f}",
         oos_cagr=f"{oos_metrics.get('cagr', 0):.2%}",
         oos_maxdd=f"{oos_metrics.get('max_drawdown', 0):.2%}",
     )
@@ -288,42 +239,13 @@ def run_walk_forward(
 
 
 # ---------------------------------------------------------------------------
-# Equity curve stitching
-# ---------------------------------------------------------------------------
-def _stitch_equity_curves(
-    curves: list[pd.Series],
-    initial_capital: float,
-) -> pd.Series:
-    """Concatenate OOS equity curves, scaling each segment.
-
-    Each segment is scaled so it starts where the previous segment ended.
-    The first segment is scaled to start at *initial_capital*.
-    """
-    segments: list[pd.Series] = []
-    current_value = initial_capital
-
-    for curve in curves:
-        if curve.empty:
-            continue
-        scale = current_value / curve.iloc[0]
-        scaled = curve * scale
-        segments.append(scaled)
-        current_value = scaled.iloc[-1]
-
-    if not segments:
-        return pd.Series(dtype=float)
-
-    return pd.concat(segments)
-
-
-# ---------------------------------------------------------------------------
 # Report formatting
 # ---------------------------------------------------------------------------
-def format_wfo_report(result: WFOResult) -> str:
-    """Format a human-readable walk-forward optimization report."""
+def format_wfo_report_v2(result: WFOResult) -> str:
+    """Format a human-readable V2 walk-forward optimisation report."""
     lines: list[str] = []
     lines.append("=" * 90)
-    lines.append("WALK-FORWARD OPTIMIZATION REPORT")
+    lines.append("WALK-FORWARD OPTIMIZATION REPORT (V2: Vol-Targeted)")
     lines.append("=" * 90)
 
     lines.append("")
@@ -337,26 +259,26 @@ def format_wfo_report(result: WFOResult) -> str:
     lines.append("-" * 90)
     header = (
         f"  {'Step':>4}  {'IS Period':<25} {'OOS Period':<25}"
-        f"  {'IS CAGR':>8}  {'OOS CAGR':>9}  {'OOS MaxDD':>9}"
+        f"  {'IS Sharpe':>9}  {'OOS Sharpe':>10}  {'OOS MaxDD':>9}"
     )
     lines.append(header)
     lines.append("-" * 90)
 
-    is_cagrs = []
-    oos_cagrs = []
+    is_sharpes = []
+    oos_sharpes = []
     for step in result.steps:
-        is_cagr = step.is_metrics.get("cagr", 0.0)
-        oos_cagr = step.oos_metrics.get("cagr", 0.0)
+        is_sharpe = step.is_metrics.get("sharpe", 0.0)
+        oos_sharpe = step.oos_metrics.get("sharpe", 0.0)
         oos_maxdd = step.oos_metrics.get("max_drawdown", 0.0)
-        is_cagrs.append(is_cagr)
-        oos_cagrs.append(oos_cagr)
+        is_sharpes.append(is_sharpe)
+        oos_sharpes.append(oos_sharpe)
 
         is_range = f"{step.is_start.date()}..{step.is_end.date()}"
         oos_range = f"{step.oos_start.date()}..{step.oos_end.date()}"
 
         lines.append(
             f"  {step.step_index + 1:>4}  {is_range:<25} {oos_range:<25}"
-            f"  {is_cagr:>8.2%}  {oos_cagr:>9.2%}  {oos_maxdd:>9.2%}"
+            f"  {is_sharpe:>9.2f}  {oos_sharpe:>10.2f}  {oos_maxdd:>9.2%}"
         )
 
     # Stitched OOS performance
@@ -371,13 +293,13 @@ def format_wfo_report(result: WFOResult) -> str:
     lines.append(f"  Max Drawdown:   {om.get('max_drawdown', 0):.2%}")
     lines.append(f"  Sharpe:         {om.get('sharpe', 0):.2f}")
     lines.append(f"  Calmar:         {om.get('calmar', 0):.2f}")
+    lines.append(f"  Ann. Vol:       {om.get('annualized_vol', 0):.2%}")
     lines.append(f"  Trading Days:   {om.get('n_days', 0)}")
 
-    # IS/OOS degradation
-    if is_cagrs and oos_cagrs:
-        import numpy as np
-        avg_is = np.mean(is_cagrs)
-        avg_oos = np.mean(oos_cagrs)
+    # IS/OOS degradation (Sharpe-based)
+    if is_sharpes and oos_sharpes:
+        avg_is = np.mean(is_sharpes)
+        avg_oos = np.mean(oos_sharpes)
         if avg_is > 0:
             degradation = 1.0 - avg_oos / avg_is
         else:
@@ -385,29 +307,33 @@ def format_wfo_report(result: WFOResult) -> str:
 
         lines.append("")
         lines.append("-" * 90)
-        lines.append("IS/OOS Degradation Analysis:")
+        lines.append("IS/OOS Degradation Analysis (Sharpe):")
         lines.append("-" * 90)
-        lines.append(f"  Average IS CAGR:   {avg_is:>8.2%}")
-        lines.append(f"  Average OOS CAGR:  {avg_oos:>8.2%}")
-        lines.append(f"  Degradation:       {degradation:>8.1%}")
+        lines.append(f"  Average IS Sharpe:   {avg_is:>8.2f}")
+        lines.append(f"  Average OOS Sharpe:  {avg_oos:>8.2f}")
+        lines.append(f"  Degradation:         {degradation:>8.1%}")
         if degradation <= 0.5:
             lines.append("  Verdict: ACCEPTABLE (< 50% degradation)")
         else:
             lines.append("  Verdict: HIGH DEGRADATION — possible overfitting")
 
-    # Recommended live parameters
+    # Recommended live parameters (V2-specific)
     fp = result.final_params
     lines.append("")
     lines.append("-" * 90)
     lines.append("Recommended Live Parameters (from final IS window):")
     lines.append("-" * 90)
-    lines.append(f"  kama_period:      {fp.kama_period}")
-    lines.append(f"  lookback_period:  {fp.lookback_period}")
-    lines.append(f"  kama_buffer:      {fp.kama_buffer}")
-    lines.append(f"  top_n:            {fp.top_n}")
-    lines.append(f"  oos_days:         {fp.oos_days}")
-    lines.append(f"  corr_threshold:   {fp.corr_threshold}")
-    lines.append(f"  weighting_mode:   {fp.weighting_mode}")
+    lines.append(f"  kama_period:           {fp.kama_period}")
+    lines.append(f"  lookback_period:       {fp.lookback_period}")
+    lines.append(f"  kama_buffer:           {fp.kama_buffer}")
+    lines.append(f"  top_n:                 {fp.top_n}")
+    lines.append(f"  oos_days:              {fp.oos_days}")
+    lines.append(f"  corr_threshold:        {fp.corr_threshold}")
+    lines.append(f"  weighting_mode:        {fp.weighting_mode}")
+    # V2-specific params
+    lines.append(f"  target_vol:            {fp.target_vol}")
+    lines.append(f"  max_leverage:          {fp.max_leverage}")
+    lines.append(f"  portfolio_vol_lookback: {fp.portfolio_vol_lookback}")
 
     lines.append("")
     lines.append("=" * 90)

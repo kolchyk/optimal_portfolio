@@ -50,38 +50,41 @@ def get_buy_candidates(
         List of up to *top_n* ticker symbols, ranked by descending score.
         Empty list when no candidates pass the filters.
     """
-    candidates = []
+    # --- Vectorized KAMA filter ---
+    valid_tickers = [t for t in tickers if t in prices_window.columns]
+    if not valid_tickers:
+        return []
 
-    for t in tickers:
-        if t not in prices_window.columns:
-            continue
-        close = prices_window[t].iloc[-1]
-        kama = kama_values.get(t, np.nan)
-        if np.isnan(close) or np.isnan(kama):
-            continue
-        if close > kama * (1 + kama_buffer):
-            candidates.append(t)
+    close_row = prices_window[valid_tickers].iloc[-1]
+    kama_s = pd.Series(kama_values).reindex(valid_tickers)
+    mask = close_row.notna() & kama_s.notna() & (close_row > kama_s * (1 + kama_buffer))
+    candidates = mask[mask].index.tolist()
 
     if not candidates:
         return []
 
-    scores: dict[str, float] = {}
-    use_precomputed = precomputed_momentum is not None
+    # --- Scoring ---
+    if precomputed_momentum is not None:
+        # Fast vectorized path (used during optimization)
+        mom = precomputed_momentum.reindex(candidates)
+        valid_mask = mom.notna() & (mom > 0)
+        mom = mom[valid_mask]
 
-    for t in candidates:
-        if use_precomputed:
-            raw_return = precomputed_momentum.get(t, np.nan)
-            if np.isnan(raw_return) or raw_return <= 0:
-                continue
-            if use_risk_adjusted and precomputed_er is not None:
-                er = precomputed_er.get(t, np.nan)
-                if not np.isnan(er):
-                    scores[t] = raw_return * (er ** 2)
-                else:
-                    scores[t] = raw_return
-            else:
-                scores[t] = raw_return
+        if mom.empty:
+            return []
+
+        if use_risk_adjusted and precomputed_er is not None:
+            er = precomputed_er.reindex(mom.index)
+            # fillna(1.0) so missing ER falls back to raw_return * 1.0² = raw_return
+            scores = mom * er.fillna(1.0) ** 2
         else:
+            scores = mom
+
+        return scores.sort_values(ascending=False).head(top_n).index.tolist()
+    else:
+        # Fallback: per-ticker loop for non-precomputed path
+        scores: dict[str, float] = {}
+        for t in candidates:
             series = prices_window[t].dropna()
             if len(series) < 5:
                 continue
@@ -105,7 +108,5 @@ def get_buy_candidates(
             else:
                 scores[t] = raw_return
 
-    ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
-    ranked_tickers = [t for t, _ in ranked]
-
-    return ranked_tickers[:top_n]
+        ranked = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        return [t for t, _ in ranked[:top_n]]

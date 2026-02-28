@@ -55,7 +55,7 @@ def _clamp_to_space(value, spec: dict):
 # ---------------------------------------------------------------------------
 PARAM_NAMES: list[str] = [
     "kama_period", "lookback_period", "kama_buffer", "top_n",
-    "oos_days", "corr_threshold",
+    "oos_days", "corr_threshold", "weighting_mode",
 ]
 
 
@@ -102,13 +102,13 @@ def compute_objective(
     max_dd_limit: float = 0.30,
     min_n_days: int = 60,
 ) -> float:
-    """Sharpe ratio with drawdown cap and hard rejection.
+    """Calmar ratio with drawdown cap and hard rejection.
 
     Returns:
-        Sharpe ratio, or -999.0 when MaxDD exceeds *max_dd_limit*
-        or the equity curve is degenerate.
+        Calmar ratio (CAGR / MaxDD), or -999.0 when MaxDD exceeds
+        *max_dd_limit* or the equity curve is degenerate.
     """
-    return make_objective("sharpe", max_dd_limit, min_n_days)(equity)
+    return make_objective("calmar", max_dd_limit, min_n_days)(equity)
 
 
 # ---------------------------------------------------------------------------

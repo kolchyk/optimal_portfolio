@@ -10,6 +10,7 @@ from src.portfolio_sim.config import (
     OOS_DAYS,
     TOP_N,
     VOLATILITY_LOOKBACK,
+    WEIGHTING_MODE,
 )
 
 
@@ -35,6 +36,9 @@ class StrategyParams:
 
     # Max pairwise correlation with held positions (1.0 = no filter)
     corr_threshold: float = CORR_THRESHOLD
+
+    # Position sizing mode: "equal_weight" or "risk_parity"
+    weighting_mode: str = WEIGHTING_MODE
 
     @property
     def warmup(self) -> int:

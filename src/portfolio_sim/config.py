@@ -18,10 +18,11 @@ RISK_FREE_RATE: float = 0.04
 # ---------------------------------------------------------------------------
 KAMA_PERIOD: int = 40
 LOOKBACK_PERIOD: int = 40
-TOP_N: int = 25
+TOP_N: int = 10
 KAMA_BUFFER: float = 0.01
 OOS_DAYS: int = 21
 CORR_THRESHOLD: float = 0.7
+WEIGHTING_MODE: str = "equal_weight"  # "equal_weight" | "risk_parity"
 
 # ---------------------------------------------------------------------------
 # Tickers
@@ -148,9 +149,10 @@ SEARCH_SPACE = {
     "kama_period": {"type": "categorical", "choices": [10, 20, 30]},
     "lookback_period": {"type": "int", "low": 20, "high": 100, "step": 20},
     "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
-    "top_n": {"type": "int", "low": 5, "high": 30, "step": 5},
+    "top_n": {"type": "int", "low": 3, "high": 15, "step": 3},
     "oos_days": {"type": "int", "low": 10, "high": 40, "step": 10},
     "corr_threshold": {"type": "float", "low": 0.5, "high": 0.95, "step": 0.05},
+    "weighting_mode": {"type": "categorical", "choices": ["equal_weight", "risk_parity"]},
 }
 
 DEFAULT_N_TRIALS: int = 150

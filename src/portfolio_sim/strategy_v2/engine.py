@@ -1,12 +1,12 @@
-"""Bar-by-bar simulation engine — Long/Cash only.
+"""V2 bar-by-bar simulation engine — KAMA momentum with vol-targeting overlay.
 
-Signals computed on Close(T), execution on Open(T+1).
-
-Key design decisions that prevent capital destruction:
-  - Lazy hold: positions are sold ONLY when their own KAMA stop-loss triggers,
-    never because they dropped in the momentum ranking.
-  - Position sizing: inverse-volatility (risk parity) — low-vol assets get
-    larger allocations so each position contributes roughly equal dollar risk.
+Extends the base engine with portfolio-level volatility targeting:
+  - Tracks daily portfolio returns to estimate realised vol.
+  - Scales position sizes by (target_vol / realised_vol) so the portfolio
+    maintains a roughly constant annualised volatility.
+  - When realised vol exceeds target, actively trims ALL positions
+    proportionally to reduce exposure — this is the key difference vs v1's
+    "lazy hold" approach.
 """
 
 from __future__ import annotations
@@ -24,44 +24,35 @@ from src.portfolio_sim.config import (
 )
 from src.portfolio_sim.indicators import compute_kama_series
 from src.portfolio_sim.models import SimulationResult
-from src.portfolio_sim.params import StrategyParams
+from src.portfolio_sim.strategy_v2.params import StrategyParamsV2
 
 COST_RATE = COMMISSION_RATE + SLIPPAGE_RATE
 DAILY_RF = (1 + RISK_FREE_RATE) ** (1 / 252) - 1
 
 
-def run_simulation(
+def run_simulation_v2(
     close_prices: pd.DataFrame,
     open_prices: pd.DataFrame,
     tickers: list[str],
     initial_capital: float,
-    params: StrategyParams | None = None,
+    params: StrategyParamsV2 | None = None,
     kama_cache: dict[str, pd.Series] | None = None,
     show_progress: bool = False,
 ) -> SimulationResult:
-    """Run a full bar-by-bar portfolio simulation.
+    """Run a bar-by-bar portfolio simulation with vol-targeting overlay."""
+    p = params or StrategyParamsV2()
 
-    Args:
-        close_prices: Full history of Close prices (DatetimeIndex rows,
-                      ticker columns). Must include SPY.
-        open_prices: Full history of Open prices (same shape/index).
-        tickers: list of tradable ticker symbols.
-        initial_capital: starting cash.
-        params: strategy parameters. Falls back to config defaults when *None*.
-        kama_cache: pre-computed {ticker: kama_series}. Computed internally
-                    when *None*.
-
-    Returns:
-        SimulationResult with equity curves, holdings history, and trades.
-    """
-    p = params or StrategyParams()
     # ------------------------------------------------------------------
-    # 0. Pre-compute KAMA for all tickers + SPY (skip if caller provided)
+    # 0. Pre-compute KAMA for all tickers + SPY
     # ------------------------------------------------------------------
     if kama_cache is None:
         kama_cache = {}
         all_tickers = list(set(tickers) | {SPY_TICKER})
-        ticker_iter = tqdm(all_tickers, desc="Computing KAMA", unit="ticker") if show_progress else all_tickers
+        ticker_iter = (
+            tqdm(all_tickers, desc="Computing KAMA", unit="ticker")
+            if show_progress
+            else all_tickers
+        )
         for t in ticker_iter:
             if t in close_prices.columns:
                 kama_cache[t] = compute_kama_series(
@@ -69,18 +60,14 @@ def run_simulation(
                 )
 
     # ------------------------------------------------------------------
-    # 0b. Pre-compute vectorized alpha & volatility matrices
+    # 0b. Pre-compute vectorised alpha & volatility matrices
     # ------------------------------------------------------------------
-    # Daily returns, rolling volatility, and momentum — computed once here,
-    # then looked up via O(1) .loc[date] inside the daily loop instead of
-    # recalculating pct_change() / std() for every ticker on every day.
     _ticker_cols = [t for t in tickers if t in close_prices.columns]
     _prices = close_prices[_ticker_cols]
 
     returns_df = _prices.pct_change()
     momentum_df = _prices / _prices.shift(p.lookback_period - 1) - 1.0
 
-    # Efficiency Ratio matrix: vectorized across all tickers at once
     _price_change = (_prices - _prices.shift(p.lookback_period)).abs()
     _daily_abs_diff = _prices.diff(1).abs()
     _volatility = _daily_abs_diff.rolling(p.lookback_period, min_periods=1).sum()
@@ -88,16 +75,11 @@ def run_simulation(
 
     rp_vol_df = returns_df.rolling(p.volatility_lookback, min_periods=5).std()
 
-    # Pre-compute KAMA DataFrame for fast vectorized row lookups.
-    # Converts {ticker: Series} dict → single DataFrame (tickers as columns).
     kama_df = pd.DataFrame(kama_cache) if kama_cache else pd.DataFrame()
 
     # ------------------------------------------------------------------
-    # 1. Determine simulation start (need warm-up for KAMA + lookback)
+    # 1. Determine simulation start
     # ------------------------------------------------------------------
-    # FIX: Remove the hard 150-row (warmup) restriction.
-    # If the provided data is too short, we start from the very first bar.
-    # Indicators will naturally stay empty until enough bars are accumulated.
     warmup = p.warmup
     if len(close_prices) <= warmup:
         warmup = 0
@@ -115,17 +97,24 @@ def run_simulation(
     equity_values: list[float] = []
 
     pending_trades: dict[str, float] | None = None
-    pending_weights: dict[str, float] | None = None  # risk parity weights for pending buys
+    pending_weights: dict[str, float] | None = None
 
-    # Tracking for dashboard
     cash_values: list[float] = []
     holdings_rows: list[dict[str, float]] = []
     trade_log: list[dict] = []
 
+    # V2: vol-targeting state
+    portfolio_returns: list[float] = []
+    current_scale: float = 1.0
+
     # ------------------------------------------------------------------
     # 3. Day-by-day loop
     # ------------------------------------------------------------------
-    date_iter = tqdm(sim_dates, desc="Simulating", unit="day") if show_progress else sim_dates
+    date_iter = (
+        tqdm(sim_dates, desc="Simulating V2", unit="day")
+        if show_progress
+        else sim_dates
+    )
     for i, date in enumerate(date_iter):
         daily_close = close_prices.loc[date]
         daily_open = open_prices.loc[date]
@@ -139,26 +128,97 @@ def run_simulation(
                 equity_at_open = max(cash, 1.0)
 
             shares_before = set(shares.keys())
-            cash = _execute_trades(
-                shares, pending_trades, equity_at_open, daily_open,
-                p.top_n, weights=pending_weights,
+            shares_before_counts = {t: shares[t] for t in shares}
+            cash = _execute_trades_v2(
+                shares,
+                pending_trades,
+                equity_at_open,
+                daily_open,
+                p.top_n,
+                weights=pending_weights,
+                scale=current_scale,
             )
 
-            # Record trades
             for t in shares_before - set(shares.keys()):
-                trade_log.append({
-                    "date": date, "ticker": t, "action": "sell",
-                    "shares": 0.0, "price": daily_open.get(t, 0.0),
-                })
+                trade_log.append(
+                    {
+                        "date": date,
+                        "ticker": t,
+                        "action": "sell",
+                        "shares": 0.0,
+                        "price": daily_open.get(t, 0.0),
+                    }
+                )
             for t in set(shares.keys()) - shares_before:
-                trade_log.append({
-                    "date": date, "ticker": t, "action": "buy",
-                    "shares": shares[t], "price": daily_open.get(t, 0.0),
-                })
+                trade_log.append(
+                    {
+                        "date": date,
+                        "ticker": t,
+                        "action": "buy",
+                        "shares": shares[t],
+                        "price": daily_open.get(t, 0.0),
+                    }
+                )
+            # Log partial sells (vol-targeting trim)
+            for t in shares_before & set(shares.keys()):
+                old_shares = shares_before_counts.get(t, 0.0)
+                if shares[t] < old_shares - 1e-10:
+                    trade_log.append(
+                        {
+                            "date": date,
+                            "ticker": t,
+                            "action": "trim",
+                            "shares": shares[t],
+                            "price": daily_open.get(t, 0.0),
+                        }
+                    )
             pending_trades = None
             pending_weights = None
 
-        # --- Cash earns risk-free rate (T-bill proxy) ---
+        # --- V2: active position reduction on Open ---
+        # When vol is high and current_scale < 1, trim all positions
+        # proportionally to match target exposure.
+        if current_scale < 1.0 and shares:
+            equity_at_open = cash + sum(
+                shares[t] * daily_open.get(t, 0.0) for t in shares
+            )
+            if equity_at_open > 0:
+                held_value = sum(
+                    shares[t] * daily_open.get(t, 0.0) for t in shares
+                )
+                current_fraction = held_value / equity_at_open
+                target_fraction = current_scale
+
+                if current_fraction > target_fraction + 0.05:
+                    # Need to trim: reduce each position proportionally
+                    trim_ratio = target_fraction / current_fraction
+                    trim_cost = 0.0
+                    for t in list(shares.keys()):
+                        price = daily_open.get(t, 0.0)
+                        if price <= 0:
+                            continue
+                        old_shares = shares[t]
+                        new_shares = old_shares * trim_ratio
+                        sold_shares = old_shares - new_shares
+                        if sold_shares > 1e-10:
+                            sell_value = sold_shares * price
+                            trim_cost += sell_value * COST_RATE
+                            shares[t] = new_shares
+                            trade_log.append(
+                                {
+                                    "date": date,
+                                    "ticker": t,
+                                    "action": "trim",
+                                    "shares": new_shares,
+                                    "price": price,
+                                }
+                            )
+                    held_value_new = sum(
+                        shares[t] * daily_open.get(t, 0.0) for t in shares
+                    )
+                    cash = equity_at_open - held_value_new - trim_cost
+
+        # --- Cash earns risk-free rate ---
         if cash > 0:
             cash *= 1 + DAILY_RF
 
@@ -168,7 +228,6 @@ def run_simulation(
         )
         equity_values.append(equity_value)
 
-        # Record daily snapshot
         cash_values.append(cash)
         holdings_rows.append({t: shares.get(t, 0.0) for t in tickers})
 
@@ -180,13 +239,30 @@ def run_simulation(
             holdings_rows.extend([empty_row] * remaining)
             break
 
-        # --- Compute signals on Close(T) for Open(T+1) ---
+        # --- V2: update portfolio return tracker ---
+        if i > 0:
+            prev_eq = equity_values[-2]
+            if prev_eq > 0:
+                portfolio_returns.append(equity_value / prev_eq - 1.0)
 
-        # Sell ONLY on individual KAMA stop-loss.
-        # A stock dropping from rank 20 to rank 50 is irrelevant
-        # as long as its own trend (Close > KAMA) holds.
+        # --- V2: compute vol-targeting scale for next day ---
+        if len(portfolio_returns) >= p.portfolio_vol_lookback:
+            recent_rets = portfolio_returns[-p.portfolio_vol_lookback :]
+            realized_vol = np.std(recent_rets) * np.sqrt(252)
+            if realized_vol > 1e-8:
+                current_scale = p.target_vol / realized_vol
+                current_scale = max(0.1, min(current_scale, p.max_leverage))
+            else:
+                current_scale = p.max_leverage
+        # else: keep current_scale = 1.0 during warmup
+
+        # --- Compute signals on Close(T) for Open(T+1) ---
         sells: dict[str, float] = {}
-        kama_row = kama_df.loc[date] if (not kama_df.empty and date in kama_df.index) else pd.Series(dtype=float)
+        kama_row = (
+            kama_df.loc[date]
+            if (not kama_df.empty and date in kama_df.index)
+            else pd.Series(dtype=float)
+        )
 
         for t in list(shares.keys()):
             t_kama = kama_row.get(t, np.nan)
@@ -194,32 +270,32 @@ def run_simulation(
                 if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
                     sells[t] = 0.0
 
-        # Get fresh candidates from alpha (using pre-computed matrices)
         kama_current = kama_row.dropna().to_dict() if len(kama_row) > 0 else {}
-
-        # Single-row DataFrame for the KAMA filter (Close > KAMA check)
         prices_row = _prices.loc[[date]]
 
         candidates = get_buy_candidates(
-            prices_row, tickers, kama_current,
-            kama_buffer=p.kama_buffer, top_n=p.top_n,
+            prices_row,
+            tickers,
+            kama_current,
+            kama_buffer=p.kama_buffer,
+            top_n=p.top_n,
             use_risk_adjusted=p.use_risk_adjusted,
             precomputed_momentum=momentum_df.loc[date],
             precomputed_er=er_df.loc[date],
         )
 
-        # --- Correlation filter: skip candidates too correlated with holdings ---
+        # --- Correlation filter ---
         if p.corr_threshold < 1.0 and shares:
             held_after_sells = [t for t in shares if t not in sells]
             if held_after_sells:
-                # Use recent lookback_period rows for correlation
                 row_idx = warmup + i
                 corr_start = max(0, row_idx - p.lookback_period + 1)
-                recent_rets = returns_df.iloc[corr_start:row_idx + 1]
+                recent_rets = returns_df.iloc[corr_start : row_idx + 1]
 
-                # Compute ONE correlation matrix for all relevant tickers
                 all_corr_tickers = list(set(candidates) | set(held_after_sells))
-                valid_cols = [c for c in all_corr_tickers if c in recent_rets.columns]
+                valid_cols = [
+                    c for c in all_corr_tickers if c in recent_rets.columns
+                ]
 
                 if valid_cols:
                     corr_matrix = recent_rets[valid_cols].corr(min_periods=5)
@@ -243,14 +319,12 @@ def run_simulation(
                             filtered.append(t)
                     candidates = filtered
 
-        # Build trade instructions
+        # --- Build trade instructions ---
         new_trades: dict[str, float] = {}
 
         for t in sells:
             new_trades[t] = 0.0
 
-        # FIX #1 (continued): fill only empty slots with new candidates.
-        # Held positions that lost rank but kept their trend stay untouched.
         open_slots = p.top_n - (len(shares) - len(sells))
 
         if open_slots > 0:
@@ -264,15 +338,14 @@ def run_simulation(
         if new_trades:
             pending_trades = new_trades
 
-            # Compute weights for new buys
             buys_list = [t for t, v in new_trades.items() if v == 1.0]
             if buys_list:
                 if p.weighting_mode == "risk_parity":
                     pending_weights = _compute_inverse_vol_weights_fast(
-                        buys_list, rp_vol_df.loc[date],
+                        buys_list,
+                        rp_vol_df.loc[date],
                     )
                 else:
-                    # Equal weight across new buys
                     w = 1.0 / len(buys_list)
                     pending_weights = {t: w for t in buys_list}
 
@@ -293,18 +366,16 @@ def run_simulation(
     )
 
 
+# ---------------------------------------------------------------------------
+# Position sizing helpers
+# ---------------------------------------------------------------------------
 def _inv_vols_to_weights(
     inv_vols: dict[str, float],
     tickers_to_buy: list[str],
 ) -> dict[str, float]:
-    """Normalize inverse-volatility values into portfolio weights.
-
-    Falls back to equal weight when no valid inverse-volatility could be
-    computed for any ticker.
-    """
+    """Normalise inverse-volatility values into portfolio weights."""
     if not inv_vols:
         return {t: 1.0 / len(tickers_to_buy) for t in tickers_to_buy}
-
     total = sum(inv_vols.values())
     return {t: v / total for t, v in inv_vols.items()}
 
@@ -313,11 +384,7 @@ def _compute_inverse_vol_weights_fast(
     tickers_to_buy: list[str],
     vol_row: pd.Series,
 ) -> dict[str, float]:
-    """Compute inverse-volatility weights from a pre-computed volatility row.
-
-    Each ticker's weight is proportional to 1/volatility, so low-vol assets
-    get larger allocations and high-vol assets get smaller allocations.
-    """
+    """Compute inverse-volatility weights from a pre-computed volatility row."""
     if not tickers_to_buy:
         return {}
 
@@ -329,31 +396,30 @@ def _compute_inverse_vol_weights_fast(
         if vol > 1e-8:
             inv_vols[t] = 1.0 / vol
         else:
-            inv_vols[t] = 1.0  # near-zero vol: treat as equal weight
+            inv_vols[t] = 1.0
 
     return _inv_vols_to_weights(inv_vols, tickers_to_buy)
 
 
-def _execute_trades(
+def _execute_trades_v2(
     shares: dict[str, float],
     trades: dict[str, float],
     equity_at_open: float,
     open_prices: pd.Series,
-    top_n: int = StrategyParams().top_n,
+    top_n: int,
     weights: dict[str, float] | None = None,
+    scale: float = 1.0,
 ) -> float:
-    """Execute trades. Mutates ``shares`` in place. Returns remaining cash.
+    """Execute trades with vol-targeting scale.  Mutates ``shares``.
 
-    Convention:
-      - trades[t] == 0.0: sell position t.
-      - trades[t] == 1.0: buy position t.
-
-    When *weights* is provided (risk parity mode), each buy's allocation is
-    equity_at_open * weights[t]. Otherwise strict 1/top_n equal weight.
+    The *scale* parameter controls the fraction of equity allocated to
+    new buys.  When scale < 1.0 (high-vol regime), less capital is
+    deployed; when scale > 1.0 (low-vol regime), up to *scale* fraction
+    is deployed (capped by available cash — no margin).
     """
     total_cost = 0.0
 
-    # Execute individual stop-loss sells
+    # Sells (identical to v1)
     for t, action in list(trades.items()):
         if action == 0.0 and t in shares:
             price = open_prices.get(t, 0.0)
@@ -365,23 +431,28 @@ def _execute_trades(
     held_value = sum(shares[t] * open_prices.get(t, 0.0) for t in shares)
     available = equity_at_open - held_value - total_cost
 
-    # Position sizing: distribute available cash proportionally among new buys.
-    buys = [t for t, action in trades.items() if action == 1.0 and t not in shares]
-    if buys and available > 0:
-        available_for_buys = available  # snapshot before buy loop
+    # V2: scale the budget for new buys
+    target_invested = equity_at_open * min(scale, 1.0)  # cap at 100% for buys
+    budget_for_buys = max(0.0, min(target_invested - held_value, available))
+
+    buys = [
+        t for t, action in trades.items() if action == 1.0 and t not in shares
+    ]
+    if buys and budget_for_buys > 0:
+        remaining_budget = budget_for_buys
         for t in buys:
             price = open_prices.get(t, 0.0)
             if weights is not None and t in weights:
-                max_allocation = available_for_buys * weights[t]
+                allocation = budget_for_buys * weights[t]
             else:
-                max_allocation = available_for_buys / len(buys)
-            allocation = min(max_allocation, available)
+                allocation = budget_for_buys / len(buys)
+            allocation = min(allocation, remaining_budget)
             if price > 0 and allocation > 0:
                 net_investment = allocation / (1 + COST_RATE)
                 cost = net_investment * COST_RATE
                 shares[t] = net_investment / price
                 total_cost += cost
-                available -= allocation
+                remaining_budget -= allocation
 
     held_value = sum(shares[t] * open_prices.get(t, 0.0) for t in shares)
     return equity_at_open - held_value - total_cost

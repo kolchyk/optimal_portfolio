@@ -38,8 +38,8 @@ def register(subparsers) -> None:
         help="Number of parallel workers (default: cpu_count - 1)",
     )
     p.add_argument(
-        "--n-trials", type=int, default=150,
-        help="Number of Optuna trials per WFO step (default: 150)",
+        "--n-trials", type=int, default=50,
+        help="Number of Optuna trials per WFO step (default: 50)",
     )
     p.add_argument(
         "--oos-days", type=int, default=None,
@@ -139,6 +139,7 @@ def _save_wfo_artifacts(result, output_dir) -> None:
             "top_n": step.optimized_params.top_n,
             "oos_days": step.optimized_params.oos_days,
             "corr_threshold": step.optimized_params.corr_threshold,
+            "weighting_mode": step.optimized_params.weighting_mode,
             "is_cagr": step.is_metrics.get("cagr", 0),
             "is_maxdd": step.is_metrics.get("max_drawdown", 0),
             "oos_cagr": step.oos_metrics.get("cagr", 0),
@@ -155,4 +156,5 @@ def _save_wfo_artifacts(result, output_dir) -> None:
     print(f"\nRecommended live parameters:")
     print(f"  kama_period={fp.kama_period}, lookback_period={fp.lookback_period}, "
           f"kama_buffer={fp.kama_buffer}, top_n={fp.top_n}, "
-          f"oos_days={fp.oos_days}, corr_threshold={fp.corr_threshold}")
+          f"oos_days={fp.oos_days}, corr_threshold={fp.corr_threshold}, "
+          f"weighting_mode={fp.weighting_mode}")

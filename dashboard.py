@@ -14,10 +14,13 @@ import structlog
 
 from src.portfolio_sim.cli_utils import filter_valid_tickers
 from src.portfolio_sim.config import (
+    CORR_THRESHOLD,
+    DEFAULT_N_TRIALS,
     INITIAL_CAPITAL,
     KAMA_BUFFER,
     KAMA_PERIOD,
     LOOKBACK_PERIOD,
+    OOS_DAYS,
     TOP_N,
     VOLATILITY_LOOKBACK,
 )
@@ -693,22 +696,18 @@ def _render_sidebar() -> dict:
     with st.sidebar:
         st.title("KAMA Momentum")
 
-        # Перемещаем кнопку запуска наверх для удобства
         run_clicked = st.button(
-            "🚀 Запустить бэктест", 
-            type="primary", 
+            "Запустить бэктест",
+            type="primary",
             width="stretch",
         )
 
-        is_etf_mode = True
-        universe_mode = "ETF Cross-Asset"
-
         # --- Группа 1: Данные и Оптимизация ---
-        with st.expander("📊 Данные и Оптимизация", expanded=True):
+        with st.expander("Данные и Оптимизация", expanded=True):
             data_years = st.slider(
                 "Период данных (лет)",
-                min_value=3, max_value=10, value=3,
-                help="Количество лет исторических данных для загрузки"
+                min_value=3, max_value=5, value=3,
+                help="Количество лет исторических данных для загрузки",
             )
 
             refresh = st.checkbox("Обновить кэш данных", value=False)
@@ -716,32 +715,36 @@ def _render_sidebar() -> dict:
             optimize_mode = st.selectbox(
                 "Режим оптимизации",
                 ["None", "Walk-Forward"],
-                help="Walk-Forward Optimization: оптимизация на IS-окне, валидация на OOS"
+                help="Walk-Forward Optimization: оптимизация на IS-окне, валидация на OOS",
             )
 
-            opt_n_trials = 50
-            opt_max_dd = 0.30
-            opt_oos_days = 126
+            opt_n_trials = DEFAULT_N_TRIALS
+            opt_oos_days = OOS_DAYS
+            opt_min_is_days = 126
 
             if optimize_mode == "Walk-Forward":
                 opt_n_trials = st.slider(
-                    "Количество итераций Optuna", min_value=20, max_value=500,
-                    value=50, step=10,
+                    "Итерации Optuna (на шаг)", min_value=20, max_value=500,
+                    value=DEFAULT_N_TRIALS, step=10,
                 )
                 opt_oos_days = st.slider(
-                    "OOS окно (дни)", min_value=63, max_value=252,
-                    value=126, step=21,
-                    help="Окно проверки вне выборки на каждом шаге (~6 месяцев = 126).",
+                    "OOS окно (дни)", min_value=10, max_value=63,
+                    value=OOS_DAYS, step=7,
+                    help="Окно проверки вне выборки на каждом шаге WFO.",
                 )
-                st.caption(f"IS окно = lookback_period (настраивается ниже)")
+                opt_min_is_days = st.slider(
+                    "IS окно (дни)", min_value=63, max_value=252,
+                    value=126, step=21,
+                    help="Минимальное окно оптимизации (in-sample).",
+                )
 
         # --- Группа 2: Параметры стратегии ---
-        with st.expander("⚙️ Параметры стратегии", expanded=True):
+        with st.expander("Параметры стратегии", expanded=True):
             initial_capital = st.number_input(
-                "Начальный капитал ($)", 
+                "Начальный капитал ($)",
                 min_value=1_000.0, max_value=10_000_000.0,
                 value=float(INITIAL_CAPITAL), step=1_000.0,
-                help="Стартовая стоимость портфеля"
+                help="Стартовая стоимость портфеля",
             )
 
             opt = st.session_state.get("optimized_params")
@@ -749,60 +752,76 @@ def _render_sidebar() -> dict:
             _default_top_n = opt.top_n if opt else TOP_N
             top_n = st.slider(
                 "Кол-во активов (Top N)",
-                min_value=3, max_value=20 if is_etf_mode else 50,
-                value=min(_default_top_n, 20) if is_etf_mode else _default_top_n,
-                help="Количество позиций, удерживаемых одновременно"
+                min_value=3, max_value=15, step=3,
+                value=min(_default_top_n, 15),
+                help="Количество позиций, удерживаемых одновременно",
             )
 
             _default_kama = opt.kama_period if opt else KAMA_PERIOD
             kama_period = st.slider(
-                "Период KAMA", min_value=5, max_value=50, value=_default_kama,
-                help="Окно адаптивной скользящей средней (торговые дни)"
+                "Период KAMA", min_value=10, max_value=50, value=_default_kama,
+                help="Окно адаптивной скользящей средней (торговые дни)",
             )
 
             _default_lookback = opt.lookback_period if opt else LOOKBACK_PERIOD
             lookback_period = st.slider(
-                "Окно моментума", min_value=20, max_value=252, value=_default_lookback,
-                help="Окно оценки моментума (торговые дни)"
+                "Окно моментума", min_value=20, max_value=120, step=10,
+                value=_default_lookback,
+                help="Окно оценки моментума (торговые дни)",
             )
 
             _default_buffer = opt.kama_buffer if opt else KAMA_BUFFER
             kama_buffer = st.slider(
-                "Буфер KAMA", min_value=0.0, max_value=0.05,
-                value=float(_default_buffer), step=0.001, format="%.3f",
-                help="Порог гистерезиса для переключения режимов"
+                "Буфер KAMA", min_value=0.005, max_value=0.05,
+                value=float(_default_buffer), step=0.005, format="%.3f",
+                help="Порог гистерезиса для переключения режимов",
             )
 
             use_risk_adjusted = st.toggle(
                 "Риск-адаптированный моментум",
-                value=True if is_etf_mode else False,
-                help="Ранжирование по доходность × ER² (Efficiency Ratio). "
-                     "Жёстко штрафует хаотичное движение, "
+                value=True,
+                help="Ранжирование по доходность x ER2 (Efficiency Ratio). "
+                     "Штрафует хаотичное движение, "
                      "предпочитает плавные восходящие тренды.",
             )
 
+            weighting_mode = st.selectbox(
+                "Режим взвешивания",
+                ["equal_weight", "risk_parity"],
+                help="equal_weight: равные веса для каждой позиции. "
+                     "risk_parity: обратная волатильность (низковолатильные активы получают больший вес).",
+            )
+
         # --- Группа 3: Расширенные настройки ---
-        with st.expander("⚙️ Расширенные настройки", expanded=False):
+        with st.expander("Расширенные настройки", expanded=False):
+            _default_corr = opt.corr_threshold if opt else CORR_THRESHOLD
+            corr_threshold = st.slider(
+                "Порог корреляции", min_value=0.50, max_value=1.0,
+                value=float(_default_corr), step=0.05, format="%.2f",
+                help="Макс. корреляция с текущими позициями (1.0 = фильтр выключен)",
+            )
+
             vol_lookback = st.slider(
                 "Окно волатильности (дни)", min_value=10, max_value=60,
                 value=VOLATILITY_LOOKBACK,
-                help="Окно для расчета весов Risk Parity (обратная волатильность)"
+                help="Окно для расчета весов Risk Parity (обратная волатильность)",
             )
 
     return {
-        "universe_mode": universe_mode,
-        "is_etf_mode": is_etf_mode,
         "data_years": data_years,
         "refresh": refresh,
         "optimize_mode": optimize_mode,
         "opt_n_trials": opt_n_trials,
         "opt_oos_days": opt_oos_days,
+        "opt_min_is_days": opt_min_is_days,
         "initial_capital": float(initial_capital),
         "top_n": top_n,
         "kama_period": kama_period,
         "lookback_period": lookback_period,
         "kama_buffer": kama_buffer,
         "use_risk_adjusted": use_risk_adjusted,
+        "weighting_mode": weighting_mode,
+        "corr_threshold": corr_threshold,
         "vol_lookback": vol_lookback,
         "run_clicked": run_clicked,
     }
@@ -900,7 +919,7 @@ def main():
     st.title("KAMA Momentum Strategy")
 
     st.caption(
-        "Long/Cash only • Cross-asset ETFs • Risk Parity • Daily KAMA review"
+        "Long/Cash \u00b7 145 Cross-Asset ETFs \u00b7 ER\u00b2 Momentum \u00b7 KAMA Stop-Loss"
     )
 
     if sidebar["run_clicked"]:
@@ -920,25 +939,28 @@ def main():
         common_kwargs = dict(
             use_risk_adjusted=sidebar["use_risk_adjusted"],
             volatility_lookback=sidebar["vol_lookback"],
+            corr_threshold=sidebar["corr_threshold"],
+            weighting_mode=sidebar["weighting_mode"],
         )
 
         # --- Optimization dispatch ---
         best = None
         opt_mode = sidebar["optimize_mode"]
-        n_trials = sidebar["opt_n_trials"]
 
         if opt_mode == "Walk-Forward":
             from src.portfolio_sim.walk_forward import run_walk_forward
 
+            n_trials = sidebar["opt_n_trials"]
             with st.spinner(
                 f"Walk-forward optimization ({n_trials} trials/step, "
-                f"OOS={sidebar['opt_oos_days']}d)..."
+                f"IS={sidebar['opt_min_is_days']}d, OOS={sidebar['opt_oos_days']}d)..."
             ):
                 wfo_result = run_walk_forward(
                     close_prices, open_prices, valid,
                     sidebar["initial_capital"],
                     n_trials_per_step=n_trials,
                     oos_days=sidebar["opt_oos_days"],
+                    min_is_days=sidebar["opt_min_is_days"],
                 )
                 best = wfo_result.final_params
                 st.session_state["opt_detail"] = ("wfo", wfo_result)
@@ -957,6 +979,7 @@ def main():
                 lookback_period=best.lookback_period,
                 top_n=best.top_n,
                 kama_buffer=best.kama_buffer,
+                weighting_mode=best.weighting_mode,
             )
         elif opt_mode != "None":
             st.warning("Optimization found no valid combinations. Using manual parameters.")
