@@ -34,6 +34,7 @@ from src.portfolio_sim.config import (
     KAMA_BUFFER,
     KAMA_PERIOD,
     KAMA_SPY_PERIOD,
+    R2_SEARCH_SPACE as _CONFIG_R2_SEARCH_SPACE,
     SPY_TICKER,
     TOP_N,
 )
@@ -73,16 +74,7 @@ class R2StrategyParams:
 
 R2_PARAM_NAMES = [f.name for f in fields(R2StrategyParams)]
 
-R2_SEARCH_SPACE: dict[str, dict] = {
-    "r2_lookback": {"type": "int", "low": 20, "high": 120, "step": 20},
-    "kama_asset_period": {"type": "categorical", "choices": [10, 20, 30, 40, 50]},
-    "kama_spy_period": {"type": "categorical", "choices": [20, 30, 40, 50]},
-    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
-    "gap_threshold": {"type": "float", "low": 0.10, "high": 0.20, "step": 0.025},
-    "atr_period": {"type": "int", "low": 10, "high": 30, "step": 5},
-    "top_n": {"type": "int", "low": 5, "high": 25, "step": 5},
-    "rebal_period_weeks": {"type": "int", "low": 1, "high": 6, "step": 1},
-}
+R2_SEARCH_SPACE: dict[str, dict] = _CONFIG_R2_SEARCH_SPACE
 
 _METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]
 
@@ -156,7 +148,7 @@ def _evaluate_r2_combo(args: tuple) -> dict:
     spy_kama = spy_kama_cache.get(SPY_TICKER)
 
     try:
-        equity, _, _ = run_backtest(
+        equity, _, _, _, _ = run_backtest(
             close, open_, tickers,
             initial_capital=capital,
             top_n=params.top_n,
@@ -426,7 +418,7 @@ def run_r2_walk_forward(
             spy_kama_cache = kama_caches.get(best_params.kama_spy_period, {})
             spy_kama = spy_kama_cache.get(SPY_TICKER)
 
-            is_equity, _, _ = run_backtest(
+            is_equity, _, _, _, _ = run_backtest(
                 close_is, open_prices.loc[is_start:is_end], tickers,
                 initial_capital=initial_capital,
                 top_n=best_params.top_n,
@@ -452,7 +444,7 @@ def run_r2_walk_forward(
             close_oos = close_prices.iloc[warmup_start_idx:oos_end_loc + 1]
             open_oos = open_prices.iloc[warmup_start_idx:oos_end_loc + 1]
 
-            oos_equity_full, _, _ = run_backtest(
+            oos_equity_full, _, _, _, _ = run_backtest(
                 close_oos, open_oos, tickers,
                 initial_capital=initial_capital,
                 top_n=best_params.top_n,

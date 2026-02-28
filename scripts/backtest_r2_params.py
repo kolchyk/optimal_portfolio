@@ -14,9 +14,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from pathlib import Path
-
-import pandas as pd
 
 from scripts.compare_methods import run_backtest
 from src.portfolio_sim.cli_utils import create_output_dir, filter_valid_tickers, setup_logging
@@ -75,7 +72,7 @@ def main() -> None:
 
     # 2. Run backtest
     print("\nRunning backtest...")
-    equity, selection_history, trade_log = run_backtest(
+    equity, spy_equity, _, _, trade_log = run_backtest(
         close_prices, open_prices, valid_tickers,
         initial_capital=INITIAL_CAPITAL,
         top_n=TOP_N,
@@ -94,13 +91,6 @@ def main() -> None:
     if equity.empty:
         print("ERROR: Empty equity curve.")
         return
-
-    # 3. SPY benchmark
-    spy_close = close_prices[SPY_TICKER].reindex(equity.index).ffill()
-    if spy_close.iloc[0] > 0:
-        spy_equity = INITIAL_CAPITAL * (spy_close / spy_close.iloc[0])
-    else:
-        spy_equity = pd.Series(INITIAL_CAPITAL, index=equity.index)
 
     # 4. Report
     strat_metrics = compute_metrics(equity)
