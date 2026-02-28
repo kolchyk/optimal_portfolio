@@ -17,6 +17,7 @@ RISK_FREE_RATE: float = 0.04
 # Strategy parameters — concentrated momentum (4x S&P 500 target)
 # ---------------------------------------------------------------------------
 KAMA_PERIOD: int = 40
+KAMA_SPY_PERIOD: int = 40  # SPY regime filter KAMA period
 LOOKBACK_PERIOD: int = 40
 TOP_N: int = 10
 KAMA_BUFFER: float = 0.01
@@ -147,6 +148,7 @@ CACHE_DIR: Path = DEFAULT_OUTPUT_DIR / "cache"
 # ---------------------------------------------------------------------------
 SEARCH_SPACE = {
     "kama_period": {"type": "categorical", "choices": [10, 20, 30]},
+    "kama_spy_period": {"type": "categorical", "choices": [20, 30, 40]},
     "lookback_period": {"type": "int", "low": 20, "high": 100, "step": 20},
     "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
     "top_n": {"type": "int", "low": 3, "high": 15, "step": 3},

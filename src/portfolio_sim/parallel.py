@@ -89,9 +89,12 @@ def evaluate_combo(
             tickers = slice_spec.get("tickers", tickers)
 
         kama_cache = _shared["kama_caches"].get(params.kama_period)
+        spy_kama_cache = _shared["kama_caches"].get(params.kama_spy_period)
+        spy_kama_series = spy_kama_cache.get("SPY") if spy_kama_cache else None
         result = run_simulation(
             close, open_, tickers,
             _shared["capital"], params=params, kama_cache=kama_cache,
+            spy_kama_series=spy_kama_series,
         )
         equity = result.equity
 

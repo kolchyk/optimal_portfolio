@@ -6,6 +6,7 @@ from src.portfolio_sim.config import (
     CORR_THRESHOLD,
     KAMA_BUFFER,
     KAMA_PERIOD,
+    KAMA_SPY_PERIOD,
     LOOKBACK_PERIOD,
     OOS_DAYS,
     TOP_N,
@@ -23,6 +24,7 @@ class StrategyParams:
     """
 
     kama_period: int = KAMA_PERIOD
+    kama_spy_period: int = KAMA_SPY_PERIOD
     lookback_period: int = LOOKBACK_PERIOD
     top_n: int = TOP_N
     kama_buffer: float = KAMA_BUFFER
@@ -46,5 +48,6 @@ class StrategyParams:
         return max(
             self.lookback_period,
             self.kama_period,
+            self.kama_spy_period,
             self.volatility_lookback,
         ) + 10

@@ -37,6 +37,7 @@ def run_simulation(
     initial_capital: float,
     params: StrategyParams | None = None,
     kama_cache: dict[str, pd.Series] | None = None,
+    spy_kama_series: pd.Series | None = None,
     show_progress: bool = False,
 ) -> SimulationResult:
     """Run a full bar-by-bar portfolio simulation.
@@ -67,6 +68,13 @@ def run_simulation(
                 kama_cache[t] = compute_kama_series(
                     close_prices[t].dropna(), period=p.kama_period
                 )
+
+    # ------------------------------------------------------------------
+    # 0a. Pre-compute SPY KAMA for regime filter
+    # ------------------------------------------------------------------
+    if spy_kama_series is None:
+        spy_prices = close_prices[SPY_TICKER].dropna()
+        spy_kama_series = compute_kama_series(spy_prices, period=p.kama_spy_period)
 
     # ------------------------------------------------------------------
     # 0b. Pre-compute vectorized alpha & volatility matrices
@@ -182,31 +190,46 @@ def run_simulation(
 
         # --- Compute signals on Close(T) for Open(T+1) ---
 
-        # Sell ONLY on individual KAMA stop-loss.
-        # A stock dropping from rank 20 to rank 50 is irrelevant
-        # as long as its own trend (Close > KAMA) holds.
+        # SPY KAMA regime filter: when SPY < KAMA, sell all and skip buys
+        spy_kama_val = spy_kama_series.get(date, np.nan) if spy_kama_series is not None else np.nan
+        spy_close_val = daily_close.get(SPY_TICKER, np.nan)
+        risk_off = (
+            not np.isnan(spy_kama_val)
+            and not np.isnan(spy_close_val)
+            and spy_close_val < spy_kama_val * (1 - p.kama_buffer)
+        )
+
         sells: dict[str, float] = {}
         kama_row = kama_df.loc[date] if (not kama_df.empty and date in kama_df.index) else pd.Series(dtype=float)
 
-        for t in list(shares.keys()):
-            t_kama = kama_row.get(t, np.nan)
-            if not np.isnan(t_kama):
-                if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
-                    sells[t] = 0.0
+        if risk_off:
+            # Risk-off: liquidate all positions, no new buys
+            for t in list(shares.keys()):
+                sells[t] = 0.0
+            candidates: list[str] = []
+        else:
+            # Sell ONLY on individual KAMA stop-loss.
+            # A stock dropping from rank 20 to rank 50 is irrelevant
+            # as long as its own trend (Close > KAMA) holds.
+            for t in list(shares.keys()):
+                t_kama = kama_row.get(t, np.nan)
+                if not np.isnan(t_kama):
+                    if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
+                        sells[t] = 0.0
 
-        # Get fresh candidates from alpha (using pre-computed matrices)
-        kama_current = kama_row.dropna().to_dict() if len(kama_row) > 0 else {}
+            # Get fresh candidates from alpha (using pre-computed matrices)
+            kama_current = kama_row.dropna().to_dict() if len(kama_row) > 0 else {}
 
-        # Single-row DataFrame for the KAMA filter (Close > KAMA check)
-        prices_row = _prices.loc[[date]]
+            # Single-row DataFrame for the KAMA filter (Close > KAMA check)
+            prices_row = _prices.loc[[date]]
 
-        candidates = get_buy_candidates(
-            prices_row, tickers, kama_current,
-            kama_buffer=p.kama_buffer, top_n=p.top_n,
-            use_risk_adjusted=p.use_risk_adjusted,
-            precomputed_momentum=momentum_df.loc[date],
-            precomputed_er=er_df.loc[date],
-        )
+            candidates = get_buy_candidates(
+                prices_row, tickers, kama_current,
+                kama_buffer=p.kama_buffer, top_n=p.top_n,
+                use_risk_adjusted=p.use_risk_adjusted,
+                precomputed_momentum=momentum_df.loc[date],
+                precomputed_er=er_df.loc[date],
+            )
 
         # --- Correlation filter: skip candidates too correlated with holdings ---
         if p.corr_threshold < 1.0 and shares:

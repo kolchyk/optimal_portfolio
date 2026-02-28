@@ -19,6 +19,7 @@ from src.portfolio_sim.config import (
     INITIAL_CAPITAL,
     KAMA_BUFFER,
     KAMA_PERIOD,
+    KAMA_SPY_PERIOD,
     LOOKBACK_PERIOD,
     OOS_DAYS,
     TOP_N,
@@ -763,6 +764,13 @@ def _render_sidebar() -> dict:
                 help="Окно адаптивной скользящей средней (торговые дни)",
             )
 
+            _default_kama_spy = opt.kama_spy_period if opt else KAMA_SPY_PERIOD
+            kama_spy_period = st.slider(
+                "Период KAMA (SPY)", min_value=10, max_value=60,
+                value=_default_kama_spy,
+                help="Период KAMA для режимного фильтра SPY (торговые дни)",
+            )
+
             _default_lookback = opt.lookback_period if opt else LOOKBACK_PERIOD
             lookback_period = st.slider(
                 "Окно моментума", min_value=20, max_value=120, step=10,
@@ -817,6 +825,7 @@ def _render_sidebar() -> dict:
         "initial_capital": float(initial_capital),
         "top_n": top_n,
         "kama_period": kama_period,
+        "kama_spy_period": kama_spy_period,
         "lookback_period": lookback_period,
         "kama_buffer": kama_buffer,
         "use_risk_adjusted": use_risk_adjusted,
@@ -899,7 +908,8 @@ def _render_optimization_results() -> None:
             fp = wfo.final_params
             st.info(
                 f"Recommended live params: "
-                f"KAMA={fp.kama_period}, Lookback={fp.lookback_period}, "
+                f"KAMA={fp.kama_period}, KAMA SPY={fp.kama_spy_period}, "
+                f"Lookback={fp.lookback_period}, "
                 f"Buffer={fp.kama_buffer}, Top N={fp.top_n}"
             )
 
@@ -969,6 +979,7 @@ def main():
             st.session_state["optimized_params"] = best
             st.toast(
                 f"Optimal: KAMA={best.kama_period}, "
+                f"KAMA SPY={best.kama_spy_period}, "
                 f"Lookback={best.lookback_period}, "
                 f"Buffer={best.kama_buffer}, "
                 f"Top N={best.top_n}",
@@ -976,6 +987,7 @@ def main():
             )
             common_kwargs.update(
                 kama_period=best.kama_period,
+                kama_spy_period=best.kama_spy_period,
                 lookback_period=best.lookback_period,
                 top_n=best.top_n,
                 kama_buffer=best.kama_buffer,
@@ -985,6 +997,7 @@ def main():
             st.warning("Optimization found no valid combinations. Using manual parameters.")
             common_kwargs.update(
                 kama_period=sidebar["kama_period"],
+                kama_spy_period=sidebar["kama_spy_period"],
                 lookback_period=sidebar["lookback_period"],
                 top_n=sidebar["top_n"],
                 kama_buffer=sidebar["kama_buffer"],
@@ -992,6 +1005,7 @@ def main():
         else:
             common_kwargs.update(
                 kama_period=sidebar["kama_period"],
+                kama_spy_period=sidebar["kama_spy_period"],
                 lookback_period=sidebar["lookback_period"],
                 top_n=sidebar["top_n"],
                 kama_buffer=sidebar["kama_buffer"],

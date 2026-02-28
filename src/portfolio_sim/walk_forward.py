@@ -195,10 +195,13 @@ def run_walk_forward(
 
             # Run IS simulation with best params for IS metrics
             is_kama_cache = kama_caches.get(best_params.kama_period)
+            is_spy_kama_cache = kama_caches.get(best_params.kama_spy_period)
+            is_spy_kama = is_spy_kama_cache.get("SPY") if is_spy_kama_cache else None
             is_sim = run_simulation(
                 close_is, open_is, valid_is, initial_capital,
                 params=best_params,
                 kama_cache=is_kama_cache,
+                spy_kama_series=is_spy_kama,
             )
             is_metrics = compute_metrics(is_sim.equity)
 
@@ -217,10 +220,13 @@ def run_walk_forward(
             ]
 
             oos_kama_cache = kama_caches.get(best_params.kama_period)
+            oos_spy_kama_cache = kama_caches.get(best_params.kama_spy_period)
+            oos_spy_kama = oos_spy_kama_cache.get("SPY") if oos_spy_kama_cache else None
             oos_sim = run_simulation(
                 close_oos_warm, open_oos_warm, valid_oos, initial_capital,
                 params=best_params,
                 kama_cache=oos_kama_cache,
+                spy_kama_series=oos_spy_kama,
             )
 
             # Trim equity to only the OOS period
@@ -402,6 +408,7 @@ def format_wfo_report(result: WFOResult) -> str:
     lines.append("Recommended Live Parameters (from final IS window):")
     lines.append("-" * 90)
     lines.append(f"  kama_period:      {fp.kama_period}")
+    lines.append(f"  kama_spy_period:  {fp.kama_spy_period}")
     lines.append(f"  lookback_period:  {fp.lookback_period}")
     lines.append(f"  kama_buffer:      {fp.kama_buffer}")
     lines.append(f"  top_n:            {fp.top_n}")

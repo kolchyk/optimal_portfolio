@@ -54,7 +54,7 @@ def _clamp_to_space(value, spec: dict):
 # Result dataclass
 # ---------------------------------------------------------------------------
 PARAM_NAMES: list[str] = [
-    "kama_period", "lookback_period", "kama_buffer", "top_n",
+    "kama_period", "kama_spy_period", "lookback_period", "kama_buffer", "top_n",
     "oos_days", "corr_threshold", "weighting_mode",
 ]
 
@@ -161,15 +161,25 @@ def precompute_kama_caches(
 
 
 def _get_kama_periods_from_space(space: dict[str, dict]) -> list[int]:
-    """Extract all possible kama_period values from a search space definition."""
-    spec = space.get("kama_period", {})
-    if spec.get("type") == "categorical":
-        return list(spec["choices"])
-    return list(range(
-        spec.get("low", 10),
-        spec.get("high", 40) + 1,
-        spec.get("step", 5),
-    ))
+    """Extract all possible KAMA period values from a search space definition.
+
+    Collects periods from both ``kama_period`` (asset filter) and
+    ``kama_spy_period`` (SPY regime filter) entries.
+    """
+    periods: list[int] = []
+    for key in ("kama_period", "kama_spy_period"):
+        spec = space.get(key, {})
+        if not spec:
+            continue
+        if spec.get("type") == "categorical":
+            periods.extend(spec["choices"])
+        else:
+            periods.extend(range(
+                spec.get("low", 10),
+                spec.get("high", 40) + 1,
+                spec.get("step", 5),
+            ))
+    return sorted(set(periods))
 
 
 # Metric keys tracked per trial

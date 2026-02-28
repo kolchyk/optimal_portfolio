@@ -182,8 +182,8 @@ class TestRunSensitivity:
     def test_base_objective_found(self, long_synthetic_prices, long_synthetic_open):
         """Base params objective should be populated via enqueue_trial."""
         tickers = [c for c in long_synthetic_prices.columns if c != "SPY"]
-        base = StrategyParams(kama_period=20, lookback_period=60,
-                              kama_buffer=0.01, top_n=10)
+        base = StrategyParams(kama_period=20, kama_spy_period=40,
+                              lookback_period=60, kama_buffer=0.01, top_n=10)
         space = {
             "kama_period": {"type": "categorical", "choices": [10, 20]},
             "lookback_period": {"type": "int", "low": 60, "high": 60, "step": 1},
