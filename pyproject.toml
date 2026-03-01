@@ -1,7 +1,7 @@
 [project]
 name = "optimal_portfolio"
 version = "0.1.0"
-description = "Simplified KAMA momentum strategy backtester for S&P 500"
+description = "Hybrid R² Momentum + Vol-Targeting strategy backtester and optimizer"
 requires-python = ">=3.12"
 dependencies = [
     "structlog>=25.1.0",

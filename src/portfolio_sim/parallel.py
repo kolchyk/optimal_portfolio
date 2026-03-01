@@ -1,121 +1,117 @@
-"""Parallel evaluation infrastructure for R² Momentum walk-forward optimization.
-
-Uses ProcessPoolExecutor with shared-memory initializer pattern
-to avoid repeated pickling of large DataFrames.
-"""
+"""Parallel evaluation infrastructure for strategy optimization."""
 
 from __future__ import annotations
 
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from dataclasses import fields
+from typing import Callable
 
-import numpy as np
 import optuna
 import pandas as pd
 from tqdm import tqdm
 
-from src.portfolio_sim.config import SPY_TICKER
-from src.portfolio_sim.engine import run_backtest
-from src.portfolio_sim.params import R2StrategyParams, R2_PARAM_NAMES
 from src.portfolio_sim.reporting import compute_metrics
-
-_METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]
+from src.portfolio_sim.engine import run_simulation
+from src.portfolio_sim.params import StrategyParams
 
 # ---------------------------------------------------------------------------
-# Worker shared state
+# Shared data for worker processes
 # ---------------------------------------------------------------------------
-_r2_shared: dict = {}
+_shared: dict = {}
 
 
-def init_r2_worker(
+def init_eval_worker(
     close_prices: pd.DataFrame,
     open_prices: pd.DataFrame,
     tickers: list[str],
     initial_capital: float,
     kama_caches: dict[int, dict[str, pd.Series]],
-) -> None:
-    """Initializer for R² evaluation worker processes."""
-    _r2_shared["close"] = close_prices
-    _r2_shared["open"] = open_prices
-    _r2_shared["tickers"] = tickers
-    _r2_shared["capital"] = initial_capital
-    _r2_shared["kama_caches"] = kama_caches
+):
+    """Initialiser for evaluation worker processes."""
+    _shared["close"] = close_prices
+    _shared["open"] = open_prices
+    _shared["tickers"] = tickers
+    _shared["capital"] = initial_capital
+    _shared["kama_caches"] = kama_caches
 
 
-def evaluate_r2_combo(args: tuple) -> dict:
-    """Evaluate a single R² param combo in a worker process."""
-    params, metric, slice_spec = args
-
-    close = _r2_shared["close"]
-    open_ = _r2_shared["open"]
-    tickers = _r2_shared["tickers"]
-    capital = _r2_shared["capital"]
-    kama_caches = _r2_shared["kama_caches"]
-
-    if slice_spec is not None:
-        sim_start = slice_spec.get("sim_start")
-        sim_end = slice_spec.get("sim_end")
-        if sim_start:
-            close = close.loc[sim_start:]
-            open_ = open_.loc[sim_start:]
-        if sim_end:
-            close = close.loc[:sim_end]
-            open_ = open_.loc[:sim_end]
-        tickers = slice_spec.get("tickers", tickers)
-
-    asset_kama = kama_caches.get(params.kama_asset_period, {})
-    spy_kama_cache = kama_caches.get(params.kama_spy_period, {})
-    spy_kama = spy_kama_cache.get(SPY_TICKER)
+def evaluate_combo(args: tuple) -> dict:
+    """Evaluate a single param combo, optionally on a date-sliced subset."""
+    if len(args) == 7:
+        params, max_dd_limit, objective_fn, objective_key, param_keys, metric_keys, slice_spec = args
+    else:
+        params, max_dd_limit, objective_fn, objective_key, param_keys, metric_keys = args
+        slice_spec = None
 
     try:
-        equity, _, _, _, _ = run_backtest(
+        close = _shared["close"]
+        open_ = _shared["open"]
+        tickers = _shared["tickers"]
+
+        if slice_spec is not None:
+            sim_start = slice_spec.get("sim_start")
+            sim_end = slice_spec.get("sim_end")
+            if sim_start:
+                close = close.loc[sim_start:]
+                open_ = open_.loc[sim_start:]
+            if sim_end:
+                close = close.loc[:sim_end]
+                open_ = open_.loc[:sim_end]
+            tickers = slice_spec.get("tickers", tickers)
+
+        # Select KAMA cache for this param set's kama_asset_period
+        kama_cache = _shared["kama_caches"].get(params.kama_asset_period)
+        # SPY KAMA from kama_spy_period cache
+        spy_kama_cache = _shared["kama_caches"].get(params.kama_spy_period, {})
+        spy_kama = spy_kama_cache.get("SPY")
+
+        result = run_simulation(
             close, open_, tickers,
-            initial_capital=capital,
-            top_n=params.top_n,
-            rebal_period_weeks=params.rebal_period_weeks,
-            kama_asset_period=params.kama_asset_period,
-            kama_spy_period=params.kama_spy_period,
-            kama_buffer=params.kama_buffer,
-            r2_lookback=params.r2_lookback,
-            gap_threshold=params.gap_threshold,
-            atr_period=params.atr_period,
-            risk_factor=params.risk_factor,
-            kama_cache_ext=asset_kama,
+            _shared["capital"],
+            params=params,
+            kama_cache=kama_cache,
             spy_kama_ext=spy_kama,
         )
+        equity = result.equity
 
-        # Slice equity to the actual IS evaluation window
-        eval_start = slice_spec.get("eval_start") if slice_spec else None
-        eval_end = slice_spec.get("eval_end") if slice_spec else None
-        if eval_start or eval_end:
-            equity = equity.loc[eval_start:eval_end]
+        if slice_spec is not None:
+            eval_start = slice_spec.get("eval_start")
+            eval_end = slice_spec.get("eval_end")
+            if eval_start and not equity.empty:
+                equity = equity.loc[eval_start:]
+            if eval_end and not equity.empty:
+                equity = equity.loc[:eval_end]
 
         if equity.empty:
             obj = -999.0
             metrics = {}
         else:
+            obj = objective_fn(equity, max_dd_limit)
             metrics = compute_metrics(equity)
-            obj = metrics[metric]
     except (ValueError, KeyError):
         obj = -999.0
         metrics = {}
 
     row: dict = {}
-    for key in R2_PARAM_NAMES:
+    for key in param_keys:
         row[key] = getattr(params, key)
-    row["objective"] = obj
-    for key in _METRIC_KEYS:
+    row[objective_key] = obj
+    for key in metric_keys:
         row[key] = metrics.get(key, 0.0)
     return row
 
 
-def suggest_r2_params(
+def suggest_params(
     trial: optuna.Trial,
     space: dict[str, dict],
-) -> R2StrategyParams:
-    """Suggest R2StrategyParams from an Optuna trial."""
+    fixed_params: dict | None = None,
+) -> StrategyParams:
+    """Suggest a StrategyParams from an Optuna trial."""
+    fixed_params = fixed_params or {}
     kwargs = {}
     for name, spec in space.items():
+        if name in fixed_params:
+            kwargs[name] = fixed_params[name]
+            continue
         if spec["type"] == "categorical":
             kwargs[name] = trial.suggest_categorical(name, spec["choices"])
         elif spec["type"] == "int":
@@ -126,46 +122,58 @@ def suggest_r2_params(
             kwargs[name] = trial.suggest_float(
                 name, spec["low"], spec["high"], step=spec.get("step"),
             )
-    return R2StrategyParams(**kwargs)
+    kwargs.update(fixed_params)
+    return StrategyParams(**kwargs)
 
 
-# ---------------------------------------------------------------------------
-# Optuna batch loop
-# ---------------------------------------------------------------------------
-def run_r2_optuna_loop(
+def run_optuna_batch_loop(
     study: optuna.Study,
     executor: ProcessPoolExecutor,
     *,
     space: dict[str, dict],
     n_trials: int,
     n_workers: int,
-    metric: str = "total_return",
+    objective_fn: Callable,
+    max_dd_limit: float,
+    objective_key: str,
+    param_keys: list[str],
+    metric_keys: list[str],
+    user_attr_keys: list[str] | None = None,
+    fixed_params: dict | None = None,
     slice_spec: dict | None = None,
-    desc: str = "R2 trials",
+    desc: str = "Optuna trials",
     verbose: bool = True,
 ) -> pd.DataFrame:
-    """Batch-parallel Optuna ask/tell loop for R² strategy."""
+    """Run batch-parallel Optuna ask/tell loop."""
+    if user_attr_keys is None:
+        user_attr_keys = metric_keys
+
     pbar = tqdm(total=n_trials, desc=desc, unit="trial", disable=not verbose)
     trials_done = 0
 
     while trials_done < n_trials:
         batch_size = min(n_workers, n_trials - trials_done)
         trials = [study.ask() for _ in range(batch_size)]
-        params_list = [suggest_r2_params(t, space) for t in trials]
+        params_list = [suggest_params(t, space, fixed_params) for t in trials]
+
+        combo = lambda p: (
+            p, max_dd_limit, objective_fn, objective_key,
+            param_keys, metric_keys,
+        )
 
         futures = {
             executor.submit(
-                evaluate_r2_combo,
-                (p, metric, slice_spec),
+                evaluate_combo,
+                combo(p) if slice_spec is None else combo(p) + (slice_spec,),
             ): (t, p)
             for t, p in zip(trials, params_list)
         }
         for future in as_completed(futures):
             trial, _ = futures[future]
             result_dict = future.result()
-            obj = result_dict["objective"]
+            obj = result_dict[objective_key]
             value = obj if obj > -999.0 else float("-inf")
-            for key in _METRIC_KEYS:
+            for key in user_attr_keys:
                 trial.set_user_attr(key, result_dict.get(key, 0.0))
             study.tell(trial, value)
             pbar.update(1)
@@ -178,23 +186,31 @@ def run_r2_optuna_loop(
         if trial.state == optuna.trial.TrialState.COMPLETE:
             row = dict(trial.params)
             obj_val = trial.value
-            row["objective"] = obj_val if obj_val != float("-inf") else -999.0
+            row[objective_key] = obj_val if obj_val != float("-inf") else -999.0
             row.update(trial.user_attrs)
             rows.append(row)
 
     return pd.DataFrame(rows)
 
 
-def select_best_r2_params(grid_df: pd.DataFrame) -> R2StrategyParams | None:
-    """Select best R2StrategyParams from optimization grid."""
-    valid = grid_df[grid_df["objective"] > -999.0]
+def select_best_params(
+    grid_df: pd.DataFrame,
+    objective_col: str,
+    param_keys: list[str],
+) -> StrategyParams | None:
+    """Select the best parameter combo from an optimisation grid."""
+    valid = grid_df[grid_df[objective_col] > -999.0]
     if valid.empty:
         return None
-    best = valid.loc[valid["objective"].idxmax()]
+    best = valid.loc[valid[objective_col].idxmax()]
 
-    _field_types = {f.name: f.type for f in fields(R2StrategyParams)}
+    _field_types = {
+        f.name: f.type
+        for f in StrategyParams.__dataclass_fields__.values()
+    }
+
     kwargs = {}
-    for key in R2_PARAM_NAMES:
+    for key in param_keys:
         if key in best.index:
             val = best[key]
             expected = _field_types.get(key)
@@ -203,4 +219,4 @@ def select_best_r2_params(grid_df: pd.DataFrame) -> R2StrategyParams | None:
             elif expected == "float" or expected is float:
                 val = float(val)
             kwargs[key] = val
-    return R2StrategyParams(**kwargs)
+    return StrategyParams(**kwargs)

@@ -1,7 +1,4 @@
-"""Fixed configuration for R² Momentum strategy (Clenow-style).
-
-All parameters are fixed — no optimization, no tuning.
-"""
+"""Configuration for hybrid R² Momentum + vol-targeting strategy."""
 
 from pathlib import Path
 
@@ -12,26 +9,6 @@ INITIAL_CAPITAL: float = 10_000
 COMMISSION_RATE: float = 0.0002  # 2 bps (0.02%), Interactive Brokers-like
 SLIPPAGE_RATE: float = 0.0005  # 5 bps (0.05%)
 RISK_FREE_RATE: float = 0.04
-
-# ---------------------------------------------------------------------------
-# R² Momentum strategy parameters (Clenow-style)
-# ---------------------------------------------------------------------------
-KAMA_PERIOD: int = 10       # KAMA period for individual asset trend filter
-KAMA_SPY_PERIOD: int = 40   # KAMA period for SPY regime filter
-TOP_N: int = 5
-KAMA_BUFFER: float = 0.005  # hysteresis buffer for KAMA filters
-R2_LOOKBACK: int = 60       # OLS regression lookback
-GAP_THRESHOLD: float = 0.175  # exclude assets with >17.5% single-day gap
-ATR_PERIOD: int = 20        # ATR lookback for position sizing
-RISK_FACTOR: float = 0.001  # risk per position per day (Clenow default)
-REBAL_PERIOD_WEEKS: int = 3 # rebalance check every N weeks
-OOS_DAYS: int = 90
-
-# ---------------------------------------------------------------------------
-# WFO schedule defaults (from schedule optimization 2026-03-01)
-# ---------------------------------------------------------------------------
-WFO_OOS_DAYS: int = 90      # OOS window (18 weeks × 5)
-WFO_MIN_IS_DAYS: int = 90   # IS window (18 weeks × 5)
 
 # ---------------------------------------------------------------------------
 # Tickers
@@ -102,36 +79,53 @@ CACHE_DIR: Path = DEFAULT_OUTPUT_DIR / "cache"
 
 
 # ---------------------------------------------------------------------------
-# Optimization search spaces (R² Momentum)
+# Optimization search space (R² Momentum + vol-targeting parameters)
 # ---------------------------------------------------------------------------
-R2_SEARCH_SPACE: dict[str, dict] = {
+SEARCH_SPACE: dict[str, dict] = {
+    # R² Momentum params
     "r2_lookback": {"type": "int", "low": 60, "high": 120, "step": 20},
     "kama_asset_period": {"type": "categorical", "choices": [10, 20, 30, 40, 50]},
     "kama_spy_period": {"type": "categorical", "choices": [20, 30, 40, 50]},
     "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
-    "gap_threshold": {"type": "float", "low": 0.10, "high": 0.20, "step": 0.025},
     "atr_period": {"type": "int", "low": 10, "high": 30, "step": 5},
     "top_n": {"type": "int", "low": 5, "high": 15, "step": 5},
     "rebal_period_weeks": {"type": "int", "low": 2, "high": 4, "step": 1},
+    "gap_threshold": {"type": "float", "low": 0.10, "high": 0.20, "step": 0.025},
+    "corr_threshold": {"type": "float", "low": 0.5, "high": 1.0, "step": 0.1},
+    # Vol-targeting params
+    "target_vol": {"type": "float", "low": 0.05, "high": 0.20, "step": 0.05},
+    "max_leverage": {"type": "categorical", "choices": [1.0, 1.25, 1.5, 2.0]},
+    "portfolio_vol_lookback": {"type": "int", "low": 15, "high": 35, "step": 10},
 }
 
-DEFAULT_N_TRIALS: int = 50
+PARAM_NAMES: list[str] = [
+    "r2_lookback", "kama_asset_period", "kama_spy_period", "kama_buffer",
+    "atr_period", "top_n", "rebal_period_weeks", "gap_threshold",
+    "corr_threshold", "target_vol", "max_leverage", "portfolio_vol_lookback",
+]
+
+DEFAULT_N_TRIALS: int = 100
+MAX_DD_LIMIT: float = 0.25
 
 
-def compute_max_warmup_from_space(space: dict[str, dict]) -> int:
-    """Compute worst-case warmup days from an R² search space.
-
-    warmup = max(r2_lookback, kama_asset_period, kama_spy_period) + 10
-    """
-    def _max_val(spec: dict) -> int:
+def get_kama_periods(space: dict[str, dict] | None = None) -> list[int]:
+    """Extract all possible KAMA period values from search space."""
+    space = space or SEARCH_SPACE
+    periods: list[int] = []
+    for key in ("kama_asset_period", "kama_spy_period"):
+        spec = space.get(key, {})
+        if not spec:
+            continue
         if spec.get("type") == "categorical":
-            return max(spec["choices"])
-        return spec.get("high", 0)
+            periods.extend(spec["choices"])
+        else:
+            periods.extend(range(
+                spec.get("low", 10),
+                spec.get("high", 40) + 1,
+                spec.get("step", 5),
+            ))
+    return sorted(set(periods))
 
-    r2_max = _max_val(space.get("r2_lookback", {"high": 120}))
-    kama_asset_max = _max_val(space.get("kama_asset_period", {"high": 50}))
-    kama_spy_max = _max_val(space.get("kama_spy_period", {"high": 50}))
-    return max(r2_max, kama_asset_max, kama_spy_max) + 10
 
 # ---------------------------------------------------------------------------
 # Schedule search space (WFO window optimization)

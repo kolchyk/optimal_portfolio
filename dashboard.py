@@ -1,10 +1,11 @@
-"""Streamlit dashboard for R² Momentum strategy (Clenow-style).
+"""Streamlit dashboard for Hybrid R² Momentum + Vol-Targeting strategy.
 
 Run with: streamlit run dashboard.py
 """
 
+from __future__ import annotations
+
 import logging
-from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
@@ -13,23 +14,15 @@ import scipy.optimize as sco
 import streamlit as st
 import structlog
 
-from src.portfolio_sim.engine import run_backtest
-from src.portfolio_sim.cli_utils import filter_valid_tickers
 from src.portfolio_sim.config import (
-    ATR_PERIOD,
     DEFAULT_N_TRIALS,
-    GAP_THRESHOLD,
     INITIAL_CAPITAL,
-    KAMA_BUFFER,
-    KAMA_PERIOD,
-    KAMA_SPY_PERIOD,
-    OOS_DAYS,
-    R2_LOOKBACK,
-    REBAL_PERIOD_WEEKS,
-    RISK_FACTOR,
-    TOP_N,
 )
+from src.portfolio_sim.cli_utils import filter_valid_tickers
 from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
+from src.portfolio_sim.engine import run_simulation
+from src.portfolio_sim.models import SimulationResult
+from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import (
     compute_drawdown_series,
     compute_metrics,
@@ -40,72 +33,100 @@ from src.portfolio_sim.reporting import (
 
 
 # ---------------------------------------------------------------------------
-# Result container (duck-typed replacement for old SimulationResult)
-# ---------------------------------------------------------------------------
-@dataclass
-class BacktestResult:
-    """Container for R² Momentum backtest output."""
-
-    equity: pd.Series
-    spy_equity: pd.Series
-    holdings_history: pd.DataFrame
-    cash_history: pd.Series
-    trade_log: list[dict] = field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
 # Theme / CSS
 # ---------------------------------------------------------------------------
-CHART_TEMPLATE = "plotly_white"
-COLOR_STRATEGY = "#2962FF"
-COLOR_BENCHMARK = "#888888"
-COLOR_POSITIVE = "#00c853"
-COLOR_NEGATIVE = "#ff1744"
-COLOR_DRAWDOWN = "#e74c3c"
-COLOR_FRONTIER = "#FFD700"
-COLOR_PORTFOLIO = "#00E676"
+CHART_TEMPLATE = "plotly_dark"
+COLOR_STRATEGY = "#00B4D8"
+COLOR_BENCHMARK = "#64748B"
+COLOR_POSITIVE = "#10B981"
+COLOR_NEGATIVE = "#EF4444"
+COLOR_DRAWDOWN = "#F43F5E"
+COLOR_FRONTIER = "#F59E0B"
+COLOR_PORTFOLIO = "#22D3EE"
 
 
 def _inject_css():
     st.markdown(
         """
         <style>
-        /* --- Equal-height metric cards in a row --- */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+        html, body, [class*="css"] {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        }
         div[data-testid="stHorizontalBlock"] {
             align-items: stretch;
         }
         div[data-testid="stColumn"] > div:first-child {
             height: 100%;
         }
-        /* --- Metric cards --- */
         .metric-card {
-            background: #f5f5f5;
-            border-radius: 8px;
-            padding: 14px 18px;
+            background: #111827;
+            border: 1px solid #1F2937;
+            border-radius: 6px;
+            padding: 16px 20px;
             margin: 4px 0;
             height: 100%;
             box-sizing: border-box;
+            transition: border-color 0.2s ease;
+        }
+        .metric-card:hover {
+            border-color: #374151;
         }
         .metric-card .label {
-            color: #666;
-            font-size: 0.8rem;
-            margin-bottom: 2px;
+            color: #94A3B8;
+            font-size: 0.72rem;
+            margin-bottom: 4px;
             text-transform: uppercase;
-            letter-spacing: 0.5px;
+            letter-spacing: 1px;
+            font-weight: 500;
         }
         .metric-card .value {
-            font-size: 1.35rem;
+            font-size: 1.4rem;
             font-weight: 700;
+            font-family: 'JetBrains Mono', 'SF Mono', monospace;
+            letter-spacing: -0.5px;
         }
-        .metric-card.positive { border-left: 4px solid #00c853; }
-        .metric-card.positive .value { color: #00c853; }
-        .metric-card.negative { border-left: 4px solid #ff1744; }
-        .metric-card.negative .value { color: #ff1744; }
-        .metric-card.neutral { border-left: 4px solid #888; }
-        .metric-card.neutral .value { color: #333; }
+        .metric-card.positive { border-left: 3px solid #10B981; }
+        .metric-card.positive .value { color: #10B981; }
+        .metric-card.negative { border-left: 3px solid #EF4444; }
+        .metric-card.negative .value { color: #EF4444; }
+        .metric-card.neutral { border-left: 3px solid #64748B; }
+        .metric-card.neutral .value { color: #E2E8F0; }
+        .metric-card .label .tooltip-icon {
+            color: #475569;
+            font-size: 0.65rem;
+            cursor: help;
+            margin-left: 4px;
+        }
         .section-divider {
-            border-top: 1px solid #ddd;
-            margin: 1.5rem 0 1rem 0;
+            border-top: 1px solid #1F2937;
+            margin: 2rem 0 1.5rem 0;
+        }
+        .section-header {
+            color: #94A3B8;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            font-weight: 600;
+            margin-bottom: 0.75rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #1F2937;
+        }
+        [data-testid="stSidebar"] {
+            border-right: 1px solid #1F2937;
+        }
+        [data-testid="stSidebar"] .stButton > button[kind="primary"] {
+            background: linear-gradient(135deg, #00B4D8 0%, #0284C7 100%);
+            border: none;
+            font-weight: 600;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            font-size: 0.85rem;
+            padding: 0.6rem 1rem;
+        }
+        .stDataFrame {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.85rem;
         }
         </style>
         """,
@@ -130,7 +151,6 @@ def _setup_logging():
         st.session_state.logging_configured = True
 
 
-
 # ---------------------------------------------------------------------------
 # Cached data helpers
 # ---------------------------------------------------------------------------
@@ -142,54 +162,72 @@ def _fetch_prices_impl(tickers_tuple: tuple, refresh: bool, cache_suffix: str = 
     return fetch_price_data(list(tickers_tuple), period=period, refresh=refresh, cache_suffix=cache_suffix)
 
 
-
 # ---------------------------------------------------------------------------
 # Metric card HTML
 # ---------------------------------------------------------------------------
-def _card_html(label: str, value: str, positive: bool | None = None) -> str:
+def _card_html(label: str, value: str, positive: bool | None = None, tooltip: str = "") -> str:
     if positive is None:
         cls = "neutral"
     elif positive:
         cls = "positive"
     else:
         cls = "negative"
+    tip = f' <span class="tooltip-icon" title="{tooltip}">&#9432;</span>' if tooltip else ""
     return (
         f'<div class="metric-card {cls}">'
-        f'<div class="label">{label}</div>'
+        f'<div class="label">{label}{tip}</div>'
         f'<div class="value">{value}</div>'
         f"</div>"
     )
+
+
+_METRIC_TOOLTIPS = {
+    "Total Return": "Total profit or loss as a percentage of your starting investment",
+    "CAGR": "Average annual growth rate, as if your portfolio grew steadily each year",
+    "Max Drawdown": "The worst peak-to-trough decline — how much you could have lost at the worst moment",
+    "Sharpe": "Return per unit of risk. Above 1.0 is good, above 2.0 is excellent",
+    "Calmar": "Annual return divided by max drawdown. Higher means better risk-adjusted returns",
+    "Ann. Volatility": "How much your portfolio fluctuates per year. Lower means a smoother ride",
+    "Win Rate": "Percentage of trading days with a positive return",
+}
 
 
 def _render_metric_row(title: str, m: dict):
     st.markdown(f"**{title}**")
     cols = st.columns(7)
     cols[0].markdown(
-        _card_html("Total Return", f"{m['total_return']:.1%}", m["total_return"] >= 0),
+        _card_html("Total Return", f"{m['total_return']:.1%}", m["total_return"] >= 0,
+                    _METRIC_TOOLTIPS["Total Return"]),
         unsafe_allow_html=True,
     )
     cols[1].markdown(
-        _card_html("CAGR", f"{m['cagr']:.1%}", m["cagr"] >= 0),
+        _card_html("CAGR", f"{m['cagr']:.1%}", m["cagr"] >= 0,
+                    _METRIC_TOOLTIPS["CAGR"]),
         unsafe_allow_html=True,
     )
     cols[2].markdown(
-        _card_html("Max Drawdown", f"{-m['max_drawdown']:.1%}", False),
+        _card_html("Max Drawdown", f"{-m['max_drawdown']:.1%}", False,
+                    _METRIC_TOOLTIPS["Max Drawdown"]),
         unsafe_allow_html=True,
     )
     cols[3].markdown(
-        _card_html("Sharpe", f"{m['sharpe']:.2f}", m["sharpe"] >= 0),
+        _card_html("Sharpe", f"{m['sharpe']:.2f}", m["sharpe"] >= 0,
+                    _METRIC_TOOLTIPS["Sharpe"]),
         unsafe_allow_html=True,
     )
     cols[4].markdown(
-        _card_html("Calmar", f"{m['calmar']:.2f}", m["calmar"] >= 0),
+        _card_html("Calmar", f"{m['calmar']:.2f}", m["calmar"] >= 0,
+                    _METRIC_TOOLTIPS["Calmar"]),
         unsafe_allow_html=True,
     )
     cols[5].markdown(
-        _card_html("Ann. Volatility", f"{m['annualized_vol']:.1%}", None),
+        _card_html("Ann. Volatility", f"{m['annualized_vol']:.1%}", None,
+                    _METRIC_TOOLTIPS["Ann. Volatility"]),
         unsafe_allow_html=True,
     )
     cols[6].markdown(
-        _card_html("Win Rate", f"{m['win_rate']:.1%}", m["win_rate"] >= 0.5),
+        _card_html("Win Rate", f"{m['win_rate']:.1%}", m["win_rate"] >= 0.5,
+                    _METRIC_TOOLTIPS["Win Rate"]),
         unsafe_allow_html=True,
     )
 
@@ -218,15 +256,25 @@ def _render_comparison_table(strat_m: dict, spy_m: dict):
 def _base_layout(**kwargs) -> dict:
     defaults = dict(
         template=CHART_TEMPLATE,
-        margin=dict(l=40, r=20, t=40, b=30),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=50, r=20, t=50, b=40),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1,
+            font=dict(size=11, color="#94A3B8"),
+            bgcolor="rgba(0,0,0,0)",
+        ),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#0D1117",
+        font=dict(family="Inter, sans-serif", color="#94A3B8", size=12),
+        title=dict(font=dict(size=14, color="#E2E8F0"), x=0, xanchor="left"),
+        xaxis=dict(gridcolor="#1E293B", zerolinecolor="#1E293B", linecolor="#1F2937"),
+        yaxis=dict(gridcolor="#1E293B", zerolinecolor="#1E293B", linecolor="#1F2937"),
     )
     defaults.update(kwargs)
     return defaults
 
 
 def plot_equity_curve(
-    result: BacktestResult, log_scale: bool = False
+    result: SimulationResult, log_scale: bool = False
 ) -> go.Figure:
     fig = go.Figure()
     fig.add_trace(
@@ -234,8 +282,8 @@ def plot_equity_curve(
             x=result.equity.index,
             y=result.equity.values,
             mode="lines",
-            name="R\u00b2 Momentum",
-            line=dict(color=COLOR_STRATEGY, width=2),
+            name="Strategy",
+            line=dict(color=COLOR_STRATEGY, width=2.5),
         )
     )
     fig.add_trace(
@@ -244,7 +292,7 @@ def plot_equity_curve(
             y=result.spy_equity.values,
             mode="lines",
             name="S&P 500 (Buy & Hold)",
-            line=dict(color=COLOR_BENCHMARK, width=1.5, dash="dash"),
+            line=dict(color=COLOR_BENCHMARK, width=1.5, dash="dot"),
         )
     )
 
@@ -256,13 +304,13 @@ def plot_equity_curve(
             yaxis_title="Portfolio Value ($)",
             height=480,
             yaxis_type=yaxis_type,
-            xaxis=dict(rangeslider=dict(visible=True), type="date"),
+            xaxis=dict(rangeslider=dict(visible=True, bgcolor="#111827"), type="date"),
         )
     )
     return fig
 
 
-def plot_drawdowns(result: BacktestResult) -> go.Figure:
+def plot_drawdowns(result: SimulationResult) -> go.Figure:
     dd_strat = compute_drawdown_series(result.equity) * 100
     dd_spy = compute_drawdown_series(result.spy_equity) * 100
     fig = go.Figure()
@@ -274,7 +322,7 @@ def plot_drawdowns(result: BacktestResult) -> go.Figure:
             name="Strategy",
             line=dict(color=COLOR_DRAWDOWN, width=1.5),
             fill="tozeroy",
-            fillcolor="rgba(231, 76, 60, 0.2)",
+            fillcolor="rgba(244, 63, 94, 0.15)",
         )
     )
     fig.add_trace(
@@ -285,7 +333,7 @@ def plot_drawdowns(result: BacktestResult) -> go.Figure:
             name="S&P 500",
             line=dict(color=COLOR_BENCHMARK, width=1, dash="dash"),
             fill="tozeroy",
-            fillcolor="rgba(136, 136, 136, 0.1)",
+            fillcolor="rgba(100, 116, 139, 0.08)",
         )
     )
     fig.update_layout(
@@ -311,8 +359,12 @@ def plot_monthly_heatmap(equity: pd.Series, title: str = "Monthly Returns") -> g
             y=[str(y) for y in table.index],
             text=text,
             texttemplate="%{text}",
-            textfont=dict(size=11),
-            colorscale="RdYlGn",
+            textfont=dict(size=11, color="#E2E8F0"),
+            colorscale=[
+                [0, "#991B1B"], [0.25, "#DC2626"],
+                [0.45, "#1E293B"], [0.55, "#1E293B"],
+                [0.75, "#059669"], [1, "#047857"],
+            ],
             zmid=0,
             colorbar=dict(title="%", ticksuffix="%"),
         )
@@ -337,6 +389,7 @@ def plot_yearly_returns(
             y=[strat_yr.get(y, 0) for y in years],
             name="Strategy",
             marker_color=COLOR_STRATEGY,
+            marker_line_width=0,
         )
     )
     fig.add_trace(
@@ -345,6 +398,7 @@ def plot_yearly_returns(
             y=[spy_yr.get(y, 0) for y in years],
             name="S&P 500",
             marker_color=COLOR_BENCHMARK,
+            marker_line_width=0,
         )
     )
     fig.update_layout(
@@ -382,7 +436,10 @@ def plot_rolling_sharpe(
             line=dict(color=COLOR_BENCHMARK, width=1, dash="dash"),
         )
     )
-    fig.add_hline(y=0, line_dash="dot", line_color="#555", line_width=1)
+    fig.add_hline(y=0, line_dash="dot", line_color="#374151", line_width=1)
+    fig.add_hline(y=1, line_dash="dash", line_color="#1E293B", line_width=1,
+                  annotation_text="Good", annotation_font_color="#64748B",
+                  annotation_font_size=10)
     fig.update_layout(
         **_base_layout(
             title=f"Rolling Sharpe Ratio ({window}-day)",
@@ -395,7 +452,7 @@ def plot_rolling_sharpe(
 
 
 def plot_holdings_pie(
-    result: BacktestResult, close_prices: pd.DataFrame
+    result: SimulationResult, close_prices: pd.DataFrame
 ) -> go.Figure:
     last_date = result.equity.index[-1]
     last_holdings = result.holdings_history.loc[last_date]
@@ -415,7 +472,7 @@ def plot_holdings_pie(
             hole=0.4,
             textinfo="label+percent",
             textposition="outside",
-            marker=dict(line=dict(color="#ffffff", width=1)),
+            marker=dict(line=dict(color="#0A0E17", width=2)),
         )
     )
     fig.update_layout(
@@ -425,13 +482,12 @@ def plot_holdings_pie(
 
 
 def plot_holdings_over_time(
-    result: BacktestResult, close_prices: pd.DataFrame
+    result: SimulationResult, close_prices: pd.DataFrame
 ) -> go.Figure:
     idx = result.holdings_history.index
     aligned_close = close_prices.reindex(index=idx, columns=result.holdings_history.columns)
     dollar_holdings = result.holdings_history * aligned_close
 
-    # Only tickers that were ever held
     ever_held = dollar_holdings.columns[dollar_holdings.sum() > 0]
     dollar_holdings = dollar_holdings[ever_held]
     dollar_holdings["Cash"] = result.cash_history
@@ -464,17 +520,7 @@ def compute_efficient_frontier(
     close_prices: pd.DataFrame,
     n_points: int = 50,
 ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
-    """Compute the efficient frontier for the given asset universe.
-
-    The optimization uses arithmetic mean returns (correct for mean-variance
-    optimization), but the returned values are converted to geometric returns
-    (CAGR) for consistent display alongside realized portfolio metrics.
-
-    Returns (frontier_vols, frontier_rets, asset_stats) where:
-      - frontier_rets are CAGR-approximated returns (geometric ~ arithmetic - sigma^2/2)
-      - asset_stats is a DataFrame with columns ['ticker', 'ann_return', 'ann_vol']
-        where 'ann_return' is the actual CAGR computed from price data.
-    """
+    """Compute the efficient frontier for the given asset universe."""
     daily_returns = close_prices.pct_change().dropna(how="all")
     valid_cols = [
         c for c in daily_returns.columns
@@ -490,12 +536,10 @@ def compute_efficient_frontier(
     cov_daily = daily_returns.cov().values
     ann_returns = mean_daily * 252
     ann_cov = cov_daily * 252
-    # Small regularization for numerical stability
     ann_cov += np.eye(n_assets) * 1e-8
 
     ann_vols = np.sqrt(np.diag(ann_cov))
 
-    # Compute CAGR for each individual asset from actual price data
     asset_cagrs = []
     for col in valid_cols:
         col_prices = close_prices[col].dropna()
@@ -525,7 +569,6 @@ def compute_efficient_frontier(
     bounds = tuple((0.0, 1.0) for _ in range(n_assets))
     w0 = np.ones(n_assets) / n_assets
 
-    # Min variance portfolio
     res_min = sco.minimize(port_vol, w0, method="SLSQP",
                            bounds=bounds, constraints=constraints)
     min_ret = port_ret(res_min.x)
@@ -549,8 +592,6 @@ def compute_efficient_frontier(
 
     frontier_vols_arr = np.array(frontier_vols)
     frontier_rets_arr = np.array(frontier_rets)
-
-    # Convert frontier returns from arithmetic to geometric (CAGR).
     frontier_rets_geo = frontier_rets_arr - 0.5 * frontier_vols_arr ** 2
 
     return frontier_vols_arr, frontier_rets_geo, asset_stats
@@ -558,7 +599,7 @@ def compute_efficient_frontier(
 
 def plot_risk_return_scatter(
     close_prices: pd.DataFrame,
-    result: BacktestResult | None = None,
+    result: SimulationResult | None = None,
 ) -> go.Figure:
     """Plot risk-return scatter of individual assets with efficient frontier."""
     asset_cols = [c for c in close_prices.columns if c != "SPY"]
@@ -570,7 +611,6 @@ def plot_risk_return_scatter(
 
     fig = go.Figure()
 
-    # Individual asset scatter
     if not asset_stats.empty:
         fig.add_trace(
             go.Scatter(
@@ -581,11 +621,15 @@ def plot_risk_return_scatter(
                 marker=dict(
                     size=6,
                     color=asset_stats["ann_return"].values * 100,
-                    colorscale="RdYlGn",
+                    colorscale=[
+                        [0, "#991B1B"], [0.3, "#DC2626"],
+                        [0.45, "#64748B"], [0.55, "#64748B"],
+                        [0.7, "#059669"], [1, "#047857"],
+                    ],
                     showscale=True,
                     colorbar=dict(title="CAGR %", ticksuffix="%"),
-                    opacity=0.7,
-                    line=dict(width=0.5, color="#333"),
+                    opacity=0.8,
+                    line=dict(width=0.5, color="#475569"),
                 ),
                 text=asset_stats["ticker"].values,
                 hovertemplate=(
@@ -597,7 +641,6 @@ def plot_risk_return_scatter(
             )
         )
 
-    # Efficient frontier curve
     if len(frontier_vols) > 0:
         fig.add_trace(
             go.Scatter(
@@ -614,7 +657,6 @@ def plot_risk_return_scatter(
             )
         )
 
-    # Current portfolio position
     if result is not None:
         strat_m = compute_metrics(result.equity)
         fig.add_trace(
@@ -625,13 +667,13 @@ def plot_risk_return_scatter(
                 name="Portfolio",
                 marker=dict(
                     size=16, color=COLOR_PORTFOLIO, symbol="star",
-                    line=dict(width=2, color="#fff"),
+                    line=dict(width=2, color="#0A0E17"),
                 ),
                 text=["Portfolio"],
                 textposition="top center",
                 textfont=dict(color=COLOR_PORTFOLIO, size=12),
                 hovertemplate=(
-                    "<b>R\u00b2 Momentum Portfolio</b><br>"
+                    "<b>Portfolio</b><br>"
                     "Volatility: %{x:.1f}%<br>"
                     "CAGR: %{y:.1f}%<br>"
                     "<extra></extra>"
@@ -647,7 +689,7 @@ def plot_risk_return_scatter(
                 name="S&P 500",
                 marker=dict(
                     size=14, color=COLOR_BENCHMARK, symbol="diamond",
-                    line=dict(width=2, color="#fff"),
+                    line=dict(width=2, color="#0A0E17"),
                 ),
                 text=["SPY"],
                 textposition="top center",
@@ -672,7 +714,7 @@ def plot_risk_return_scatter(
     return fig
 
 
-def _render_trade_log(result: BacktestResult):
+def _render_trade_log(result: SimulationResult):
     if not result.trade_log:
         st.info("No trades recorded.")
         return
@@ -707,9 +749,18 @@ def _render_trade_log(result: BacktestResult):
 # ---------------------------------------------------------------------------
 # Sidebar
 # ---------------------------------------------------------------------------
+_DEFAULTS = StrategyParams()
+
+
 def _render_sidebar() -> dict:
     with st.sidebar:
-        st.title("R\u00b2 Momentum")
+        st.markdown(
+            '<h2 style="margin:0; padding:0; color:#E2E8F0; font-weight:700;">'
+            'Optimal Portfolio</h2>'
+            '<p style="color:#64748B; font-size:0.8rem; margin-top:4px;">'
+            'R² Momentum Backtester</p>',
+            unsafe_allow_html=True,
+        )
 
         run_clicked = st.button(
             "\u0417\u0430\u043f\u0443\u0441\u0442\u0438\u0442\u044c \u0431\u044d\u043a\u0442\u0435\u0441\u0442",
@@ -734,7 +785,7 @@ def _render_sidebar() -> dict:
             )
 
             opt_n_trials = DEFAULT_N_TRIALS
-            opt_oos_days = OOS_DAYS
+            opt_oos_days = 63
             opt_min_is_days = 126
 
             if optimize_mode == "Walk-Forward":
@@ -744,7 +795,7 @@ def _render_sidebar() -> dict:
                 )
                 opt_oos_days = st.slider(
                     "OOS \u043e\u043a\u043d\u043e (\u0434\u043d\u0438)", min_value=10, max_value=63,
-                    value=OOS_DAYS, step=7,
+                    value=63, step=7,
                     help="\u041e\u043a\u043d\u043e \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0438 \u0432\u043d\u0435 \u0432\u044b\u0431\u043e\u0440\u043a\u0438 \u043d\u0430 \u043a\u0430\u0436\u0434\u043e\u043c \u0448\u0430\u0433\u0435 WFO.",
                 )
                 opt_min_is_days = st.slider(
@@ -764,14 +815,14 @@ def _render_sidebar() -> dict:
 
             opt = st.session_state.get("optimized_params")
 
-            _default_r2_lb = opt.r2_lookback if opt else R2_LOOKBACK
+            _default_r2_lb = opt.r2_lookback if opt else _DEFAULTS.r2_lookback
             r2_lookback = st.slider(
                 "R\u00b2 Lookback (\u0434\u043d\u0438)", min_value=20, max_value=120, step=20,
                 value=_default_r2_lb,
                 help="\u041e\u043a\u043d\u043e OLS-\u0440\u0435\u0433\u0440\u0435\u0441\u0441\u0438\u0438 \u0434\u043b\u044f \u0441\u043a\u043e\u0440\u0438\u043d\u0433\u0430 \u043c\u043e\u043c\u0435\u043d\u0442\u0443\u043c\u0430 (Clenow)",
             )
 
-            _default_top_n = opt.top_n if opt else TOP_N
+            _default_top_n = opt.top_n if opt else _DEFAULTS.top_n
             top_n = st.slider(
                 "\u041a\u043e\u043b-\u0432\u043e \u0430\u043a\u0442\u0438\u0432\u043e\u0432 (Top N)",
                 min_value=5, max_value=25, step=5,
@@ -779,27 +830,27 @@ def _render_sidebar() -> dict:
                 help="\u041a\u043e\u043b\u0438\u0447\u0435\u0441\u0442\u0432\u043e \u043f\u043e\u0437\u0438\u0446\u0438\u0439, \u0443\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u043c\u044b\u0445 \u043e\u0434\u043d\u043e\u0432\u0440\u0435\u043c\u0435\u043d\u043d\u043e",
             )
 
-            _default_kama = opt.kama_asset_period if opt else KAMA_PERIOD
+            _default_kama = opt.kama_asset_period if opt else _DEFAULTS.kama_asset_period
             kama_asset_period = st.slider(
                 "\u041f\u0435\u0440\u0438\u043e\u0434 KAMA (\u0430\u043a\u0442\u0438\u0432)", min_value=10, max_value=50, value=_default_kama,
                 help="KAMA \u0434\u043b\u044f \u0438\u043d\u0434\u0438\u0432\u0438\u0434\u0443\u0430\u043b\u044c\u043d\u043e\u0433\u043e \u0442\u0440\u0435\u043d\u0434-\u0444\u0438\u043b\u044c\u0442\u0440\u0430 (\u0442\u043e\u0440\u0433\u043e\u0432\u044b\u0435 \u0434\u043d\u0438)",
             )
 
-            _default_kama_spy = opt.kama_spy_period if opt else KAMA_SPY_PERIOD
+            _default_kama_spy = opt.kama_spy_period if opt else _DEFAULTS.kama_spy_period
             kama_spy_period = st.slider(
                 "\u041f\u0435\u0440\u0438\u043e\u0434 KAMA (SPY)", min_value=10, max_value=60,
                 value=_default_kama_spy,
                 help="\u041f\u0435\u0440\u0438\u043e\u0434 KAMA \u0434\u043b\u044f \u0440\u0435\u0436\u0438\u043c\u043d\u043e\u0433\u043e \u0444\u0438\u043b\u044c\u0442\u0440\u0430 SPY (\u0442\u043e\u0440\u0433\u043e\u0432\u044b\u0435 \u0434\u043d\u0438)",
             )
 
-            _default_buffer = opt.kama_buffer if opt else KAMA_BUFFER
+            _default_buffer = opt.kama_buffer if opt else _DEFAULTS.kama_buffer
             kama_buffer = st.slider(
                 "\u0411\u0443\u0444\u0435\u0440 KAMA", min_value=0.005, max_value=0.05,
                 value=float(_default_buffer), step=0.005, format="%.3f",
                 help="\u041f\u043e\u0440\u043e\u0433 \u0433\u0438\u0441\u0442\u0435\u0440\u0435\u0437\u0438\u0441\u0430 \u0434\u043b\u044f \u043f\u0435\u0440\u0435\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u044f \u0440\u0435\u0436\u0438\u043c\u043e\u0432",
             )
 
-            _default_rebal = opt.rebal_period_weeks if opt else REBAL_PERIOD_WEEKS
+            _default_rebal = opt.rebal_period_weeks if opt else _DEFAULTS.rebal_period_weeks
             rebal_period_weeks = st.slider(
                 "\u041f\u0435\u0440\u0438\u043e\u0434 \u0440\u0435\u0431\u0430\u043b\u0430\u043d\u0441\u0438\u0440\u043e\u0432\u043a\u0438 (\u043d\u0435\u0434.)",
                 min_value=1, max_value=6, step=1,
@@ -807,27 +858,55 @@ def _render_sidebar() -> dict:
                 help="\u041a\u0430\u043a \u0447\u0430\u0441\u0442\u043e \u043f\u0435\u0440\u0435\u0441\u043c\u0430\u0442\u0440\u0438\u0432\u0430\u0435\u043c \u043f\u043e\u0440\u0442\u0444\u0435\u043b\u044c (lazy-hold \u0440\u0435\u0431\u0430\u043b\u0430\u043d\u0441\u0438\u0440\u043e\u0432\u043a\u0430)",
             )
 
-        # --- Group 3: Advanced Settings ---
+        # --- Group 3: Advanced / Vol-Targeting ---
         with st.expander("\u0420\u0430\u0441\u0448\u0438\u0440\u0435\u043d\u043d\u044b\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438", expanded=False):
-            _default_gap = opt.gap_threshold if opt else GAP_THRESHOLD
+            _default_gap = opt.gap_threshold if opt else _DEFAULTS.gap_threshold
             gap_threshold = st.slider(
                 "\u041f\u043e\u0440\u043e\u0433 \u0433\u044d\u043f\u0430", min_value=0.10, max_value=0.25,
                 value=float(_default_gap), step=0.025, format="%.3f",
-                help="\u0418\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u0430\u043a\u0442\u0438\u0432\u043e\u0432 \u0441 \u043e\u0434\u043d\u043e\u0434\u043d\u0435\u0432\u043d\u044b\u043c \u0433\u044d\u043f\u043e\u043c > \u043f\u043e\u0440\u043e\u0433\u0430 (\u0444\u0438\u043b\u044c\u0442\u0440 \u0441\u043f\u043b\u0438\u0442\u043e\u0432/\u043e\u0442\u0447\u0451\u0442\u043e\u0432)",
+                help="\u0418\u0441\u043a\u043b\u044e\u0447\u0435\u043d\u0438\u0435 \u0430\u043a\u0442\u0438\u0432\u043e\u0432 \u0441 \u043e\u0434\u043d\u043e\u0434\u043d\u0435\u0432\u043d\u044b\u043c \u0433\u044d\u043f\u043e\u043c > \u043f\u043e\u0440\u043e\u0433\u0430",
             )
 
-            _default_atr = opt.atr_period if opt else ATR_PERIOD
+            _default_atr = opt.atr_period if opt else _DEFAULTS.atr_period
             atr_period = st.slider(
                 "\u041f\u0435\u0440\u0438\u043e\u0434 ATR (\u0434\u043d\u0438)", min_value=10, max_value=30, step=5,
                 value=_default_atr,
-                help="\u041e\u043a\u043d\u043e ATR \u0434\u043b\u044f \u0440\u0430\u0441\u0447\u0451\u0442\u0430 \u0440\u0430\u0437\u043c\u0435\u0440\u0430 \u043f\u043e\u0437\u0438\u0446\u0438\u0439 (ATR risk parity)",
+                help="\u041e\u043a\u043d\u043e ATR \u0434\u043b\u044f \u0440\u0430\u0441\u0447\u0451\u0442\u0430 \u0440\u0430\u0437\u043c\u0435\u0440\u0430 \u043f\u043e\u0437\u0438\u0446\u0438\u0439",
             )
 
-            _default_rf = opt.risk_factor if opt else RISK_FACTOR
+            _default_rf = opt.risk_factor if opt else _DEFAULTS.risk_factor
             risk_factor = st.slider(
                 "Risk Factor", min_value=0.0005, max_value=0.002,
                 value=float(_default_rf), step=0.0005, format="%.4f",
                 help="\u0420\u0438\u0441\u043a \u043d\u0430 \u043f\u043e\u0437\u0438\u0446\u0438\u044e \u0432 \u0434\u0435\u043d\u044c (Clenow default: 0.001 = 10 bps)",
+            )
+
+            _default_corr = opt.corr_threshold if opt else _DEFAULTS.corr_threshold
+            corr_threshold = st.slider(
+                "\u041f\u043e\u0440\u043e\u0433 \u043a\u043e\u0440\u0435\u043b\u044f\u0446\u0438\u0438", min_value=0.5, max_value=1.0,
+                value=float(_default_corr), step=0.1, format="%.1f",
+                help="\u041a\u043e\u0440\u0435\u043b\u044f\u0446\u0438\u043e\u043d\u043d\u044b\u0439 \u0444\u0438\u043b\u044c\u0442\u0440 \u0434\u043b\u044f \u043d\u043e\u0432\u044b\u0445 \u0432\u0445\u043e\u0434\u043e\u0432",
+            )
+
+            _default_tvol = opt.target_vol if opt else _DEFAULTS.target_vol
+            target_vol = st.slider(
+                "Target Vol (\u0433\u043e\u0434\u043e\u0432\u0430\u044f)", min_value=0.05, max_value=0.25,
+                value=float(_default_tvol), step=0.05, format="%.2f",
+                help="\u0426\u0435\u043b\u0435\u0432\u0430\u044f \u0433\u043e\u0434\u043e\u0432\u0430\u044f \u0432\u043e\u043b\u0430\u0442\u0438\u043b\u044c\u043d\u043e\u0441\u0442\u044c \u043f\u043e\u0440\u0442\u0444\u0435\u043b\u044f",
+            )
+
+            _default_mlev = opt.max_leverage if opt else _DEFAULTS.max_leverage
+            max_leverage = st.slider(
+                "Max Leverage", min_value=1.0, max_value=2.0,
+                value=float(_default_mlev), step=0.25, format="%.2f",
+                help="\u041c\u0430\u043a\u0441\u0438\u043c\u0430\u043b\u044c\u043d\u044b\u0439 \u043c\u0430\u0441\u0448\u0442\u0430\u0431\u043d\u044b\u0439 \u043a\u043e\u044d\u0444\u0444\u0438\u0446\u0438\u0435\u043d\u0442",
+            )
+
+            _default_pvlb = opt.portfolio_vol_lookback if opt else _DEFAULTS.portfolio_vol_lookback
+            portfolio_vol_lookback = st.slider(
+                "Vol Lookback (\u0434\u043d\u0438)", min_value=15, max_value=35, step=5,
+                value=_default_pvlb,
+                help="\u041e\u043a\u043d\u043e \u0434\u043b\u044f \u043e\u0446\u0435\u043d\u043a\u0438 \u0440\u0435\u0430\u043b\u0438\u0437\u043e\u0432\u0430\u043d\u043d\u043e\u0439 \u0432\u043e\u043b\u0430\u0442\u0438\u043b\u044c\u043d\u043e\u0441\u0442\u0438",
             )
 
     return {
@@ -847,6 +926,10 @@ def _render_sidebar() -> dict:
         "gap_threshold": gap_threshold,
         "atr_period": atr_period,
         "risk_factor": risk_factor,
+        "corr_threshold": corr_threshold,
+        "target_vol": target_vol,
+        "max_leverage": max_leverage,
+        "portfolio_vol_lookback": portfolio_vol_lookback,
         "run_clicked": run_clicked,
     }
 
@@ -865,7 +948,6 @@ def _render_optimization_results() -> None:
     if kind == "wfo":
         with st.expander("Walk-Forward Optimization Results", expanded=False):
             wfo = data
-            # Per-step table
             step_rows = []
             for step in wfo.steps:
                 step_rows.append({
@@ -882,7 +964,6 @@ def _render_optimization_results() -> None:
                    "OOS MaxDD": "{:.2%}", "OOS Sharpe": "{:.2f}"}
             st.dataframe(steps_df.style.format(fmt), width="stretch")
 
-            # Degradation
             is_cagrs = [s.is_metrics.get("cagr", 0) for s in wfo.steps]
             oos_cagrs = [s.oos_metrics.get("cagr", 0) for s in wfo.steps]
             avg_is = np.mean(is_cagrs)
@@ -894,7 +975,6 @@ def _render_optimization_results() -> None:
             else:
                 st.metric("IS/OOS Degradation", "N/A")
 
-            # Stitched OOS equity chart
             st.subheader("Stitched Out-of-Sample Equity")
             fig = go.Figure()
             fig.add_trace(go.Scatter(
@@ -917,14 +997,15 @@ def _render_optimization_results() -> None:
             )
             st.plotly_chart(fig, width="stretch")
 
-            # Recommended params
             fp = wfo.final_params
             st.info(
                 f"Recommended live params: "
                 f"R\u00b2 LB={fp.r2_lookback}, KAMA Asset={fp.kama_asset_period}, "
                 f"KAMA SPY={fp.kama_spy_period}, "
                 f"Buffer={fp.kama_buffer}, Top N={fp.top_n}, "
-                f"Rebal={fp.rebal_period_weeks}w"
+                f"Rebal={fp.rebal_period_weeks}w, "
+                f"Target Vol={fp.target_vol:.0%}, "
+                f"Max Lev={fp.max_leverage}"
             )
 
 
@@ -940,10 +1021,10 @@ def main():
     _inject_css()
     sidebar = _render_sidebar()
 
-    st.title("R\u00b2 Momentum Strategy")
+    st.title("Portfolio Strategy")
 
     st.caption(
-        "Long/Cash \u00b7 145 Cross-Asset ETFs \u00b7 R\u00b2 Momentum \u00b7 ATR Risk Parity \u00b7 KAMA Trend Filter"
+        "Long/Cash \u00b7 Cross-Asset ETFs \u00b7 R\u00b2 Momentum \u00b7 ATR Risk Parity \u00b7 Vol-Targeting"
     )
 
     if sidebar["run_clicked"]:
@@ -956,12 +1037,7 @@ def main():
             cache_suffix=cache_suffix, period=period,
         )
 
-        min_days = max(sidebar["r2_lookback"], sidebar["kama_asset_period"],
-                       sidebar["kama_spy_period"]) + 10
-        valid = filter_valid_tickers(close_prices, min_days)
-
-        # R² backtest kwargs
-        bt_kwargs = dict(
+        params = StrategyParams(
             r2_lookback=sidebar["r2_lookback"],
             top_n=sidebar["top_n"],
             kama_asset_period=sidebar["kama_asset_period"],
@@ -971,21 +1047,28 @@ def main():
             gap_threshold=sidebar["gap_threshold"],
             atr_period=sidebar["atr_period"],
             risk_factor=sidebar["risk_factor"],
+            corr_threshold=sidebar["corr_threshold"],
+            target_vol=sidebar["target_vol"],
+            max_leverage=sidebar["max_leverage"],
+            portfolio_vol_lookback=sidebar["portfolio_vol_lookback"],
         )
+
+        min_days = params.warmup
+        valid = filter_valid_tickers(close_prices, min_days)
 
         # --- Optimization dispatch ---
         best = None
         opt_mode = sidebar["optimize_mode"]
 
         if opt_mode == "Walk-Forward":
-            from src.portfolio_sim.walk_forward import run_r2_walk_forward
+            from src.portfolio_sim.walk_forward import run_walk_forward
 
             n_trials = sidebar["opt_n_trials"]
             with st.spinner(
                 f"Walk-forward optimization ({n_trials} trials/step, "
                 f"IS={sidebar['opt_min_is_days']}d, OOS={sidebar['opt_oos_days']}d)..."
             ):
-                wfo_result = run_r2_walk_forward(
+                wfo_result = run_walk_forward(
                     close_prices, open_prices, valid,
                     sidebar["initial_capital"],
                     n_trials_per_step=n_trials,
@@ -1002,37 +1085,20 @@ def main():
                 f"KAMA={best.kama_asset_period}, "
                 f"SPY={best.kama_spy_period}, "
                 f"Top N={best.top_n}, "
-                f"Rebal={best.rebal_period_weeks}w",
+                f"Rebal={best.rebal_period_weeks}w, "
+                f"Vol={best.target_vol:.0%}",
                 icon="\u2705",
             )
-            bt_kwargs.update(
-                r2_lookback=best.r2_lookback,
-                kama_asset_period=best.kama_asset_period,
-                kama_spy_period=best.kama_spy_period,
-                kama_buffer=best.kama_buffer,
-                top_n=best.top_n,
-                rebal_period_weeks=best.rebal_period_weeks,
-                gap_threshold=best.gap_threshold,
-                atr_period=best.atr_period,
-                risk_factor=best.risk_factor,
-            )
+            params = best
         elif opt_mode != "None":
             st.warning("Optimization found no valid combinations. Using manual parameters.")
 
-        with st.spinner(f"Running R\u00b2 Momentum simulation on {len(valid)} tickers..."):
-            equity, spy_equity, holdings_history, cash_history, trade_log = run_backtest(
+        with st.spinner(f"Running simulation on {len(valid)} tickers..."):
+            result = run_simulation(
                 close_prices, open_prices, valid,
                 initial_capital=sidebar["initial_capital"],
-                **bt_kwargs,
+                params=params,
             )
-
-        result = BacktestResult(
-            equity=equity,
-            spy_equity=spy_equity,
-            holdings_history=holdings_history,
-            cash_history=cash_history,
-            trade_log=trade_log,
-        )
 
         st.session_state["result"] = result
         st.session_state["close_prices"] = close_prices
@@ -1041,7 +1107,7 @@ def main():
         st.info("Click **Run Backtest** in the sidebar to start.")
         return
 
-    result: BacktestResult = st.session_state["result"]
+    result: SimulationResult = st.session_state["result"]
     close_prices: pd.DataFrame = st.session_state["close_prices"]
 
     strat_m = compute_metrics(result.equity)
@@ -1129,7 +1195,7 @@ def main():
 
 if __name__ == "__main__":
     st.set_page_config(
-        page_title="R\u00b2 Momentum Strategy",
+        page_title="Portfolio Strategy",
         page_icon="\U0001F4C8",
         layout="wide",
         initial_sidebar_state="expanded",

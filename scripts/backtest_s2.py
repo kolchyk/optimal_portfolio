@@ -1,6 +1,6 @@
-"""S2 Hybrid backtest with fixed parameters.
+"""Hybrid backtest with fixed parameters.
 
-Runs S2 (R² Momentum + Vol-Targeting) with default or WFO-recommended params.
+Runs hybrid R² Momentum + Vol-Targeting with default or WFO-recommended params.
 
 Usage:
     uv run python scripts/backtest_s2.py
@@ -14,12 +14,12 @@ import argparse
 from src.portfolio_sim.cli_utils import create_output_dir, filter_valid_tickers, setup_logging
 from src.portfolio_sim.config import INITIAL_CAPITAL, SPY_TICKER
 from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
+from src.portfolio_sim.engine import run_simulation
+from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics, format_comparison_table, save_equity_png
-from src.portfolio_sim.strategy_s2.engine import run_simulation_s2
-from src.portfolio_sim.strategy_s2.params import S2StrategyParams
 
 # Default parameters (can be overridden by WFO output)
-PARAMS = S2StrategyParams(
+PARAMS = StrategyParams(
     r2_lookback=90,
     kama_asset_period=10,
     kama_spy_period=40,
@@ -38,7 +38,7 @@ PARAMS = S2StrategyParams(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="S2 Hybrid backtest (R\u00b2 Momentum + Vol-Targeting)",
+        description="Hybrid backtest (R\u00b2 Momentum + Vol-Targeting)",
     )
     parser.add_argument("--period", default="3y", help="yfinance period (default: 3y)")
     parser.add_argument("--refresh", action="store_true", help="Force refresh data cache")
@@ -47,7 +47,7 @@ def main() -> None:
     setup_logging()
 
     print("=" * 60)
-    print("S2 Hybrid Backtest \u2014 R\u00b2 Momentum + Vol-Targeting")
+    print("Hybrid Backtest \u2014 R\u00b2 Momentum + Vol-Targeting")
     print("=" * 60)
     print(f"\nParams: r2_lb={PARAMS.r2_lookback} kama_asset={PARAMS.kama_asset_period} "
           f"kama_spy={PARAMS.kama_spy_period} kama_buf={PARAMS.kama_buffer} "
@@ -76,8 +76,8 @@ def main() -> None:
         return
 
     # 2. Run backtest
-    print("\nRunning S2 backtest...")
-    result = run_simulation_s2(
+    print("\nRunning backtest...")
+    result = run_simulation(
         close_prices, open_prices, valid_tickers,
         initial_capital=INITIAL_CAPITAL,
         params=PARAMS,
@@ -102,14 +102,14 @@ def main() -> None:
     print(f"  Buys: {buy_count}  Sells: {sell_count}  Trims: {trim_count}")
 
     # 4. Save artifacts
-    output_dir = create_output_dir("backtest_s2")
+    output_dir = create_output_dir("backtest")
     print(f"\nSaving to {output_dir}/")
 
     (output_dir / "equity.csv").write_text(result.equity.to_csv(), encoding="utf-8")
     save_equity_png(
         result.equity, result.spy_equity,
         output_dir,
-        title="S2 Hybrid Backtest (R\u00b2 Momentum + Vol-Targeting)",
+        title="Hybrid Backtest (R\u00b2 Momentum + Vol-Targeting)",
         filename="equity_curve.png",
     )
 

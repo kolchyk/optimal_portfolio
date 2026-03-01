@@ -5,18 +5,12 @@ import optuna
 import pandas as pd
 import pytest
 
-from src.portfolio_sim.models import R2WFOResult, R2WFOStep
-from src.portfolio_sim.optimizer import (
-    compute_objective,
-    precompute_kama_caches,
-    r2_objective,
-)
-from src.portfolio_sim.parallel import suggest_r2_params
-from src.portfolio_sim.params import R2StrategyParams
-from src.portfolio_sim.config import R2_SEARCH_SPACE
+from src.portfolio_sim.config import SEARCH_SPACE
+from src.portfolio_sim.optimizer import make_objective, precompute_kama_caches
+from src.portfolio_sim.parallel import suggest_params
+from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.walk_forward import (
     _stitch_equity_curves,
-    format_r2_wfo_report,
     generate_wfo_schedule,
 )
 
@@ -43,26 +37,19 @@ def long_synthetic_prices() -> pd.DataFrame:
     return pd.DataFrame(data, index=dates)
 
 
-@pytest.fixture
-def long_synthetic_open(long_synthetic_prices: pd.DataFrame) -> pd.DataFrame:
-    np.random.seed(123)
-    noise = 1 + np.random.normal(0, 0.002, long_synthetic_prices.shape)
-    return long_synthetic_prices * noise
-
-
 # ---------------------------------------------------------------------------
 # Objective function tests
 # ---------------------------------------------------------------------------
-class TestComputeObjective:
+class TestMakeObjective:
     def test_positive_growth_returns_positive(self):
-        # Use noisy uptrend so max_drawdown > 0 and calmar is finite
         np.random.seed(42)
         returns = np.random.normal(0.001, 0.01, 252)
         prices = 10000 * np.exp(np.cumsum(returns))
         equity = pd.Series(
             prices, index=pd.bdate_range("2020-01-01", periods=252),
         )
-        obj = compute_objective(equity)
+        obj_fn = make_objective("total_return", max_dd_limit=0.30)
+        obj = obj_fn(equity)
         assert obj > 0
 
     def test_high_drawdown_rejected(self):
@@ -73,78 +60,43 @@ class TestComputeObjective:
         equity = pd.Series(
             values, index=pd.bdate_range("2020-01-01", periods=252)
         )
-        assert compute_objective(equity, max_dd_limit=0.30) == -999.0
+        obj_fn = make_objective("total_return", max_dd_limit=0.30)
+        assert obj_fn(equity) == -999.0
 
     def test_negative_cagr_rejected(self):
         equity = pd.Series(
             np.linspace(10000, 8000, 252),
             index=pd.bdate_range("2020-01-01", periods=252),
         )
-        assert compute_objective(equity) == -999.0
+        obj_fn = make_objective("total_return", max_dd_limit=0.30)
+        assert obj_fn(equity) == -999.0
 
     def test_short_equity_rejected(self):
         equity = pd.Series(
             [10000, 10100, 10200],
             index=pd.bdate_range("2020-01-01", periods=3),
         )
-        assert compute_objective(equity) == -999.0
-
-    def test_returns_positive_for_healthy_curve(self):
-        # Use noisy uptrend so calmar metric is positive
-        np.random.seed(99)
-        returns = np.random.normal(0.0008, 0.008, 252)
-        prices = 10000 * np.exp(np.cumsum(returns))
-        equity = pd.Series(
-            prices, index=pd.bdate_range("2020-01-01", periods=252),
-        )
-        obj = compute_objective(equity)
-        assert obj > 0
-
-
-class TestR2Objective:
-    def test_positive_growth_returns_calmar(self):
-        equity = pd.Series(
-            np.linspace(10000, 15000, 252),
-            index=pd.bdate_range("2020-01-01", periods=252),
-        )
-        obj = r2_objective(equity)
-        assert obj > 0
-
-    def test_negative_cagr_rejected(self):
-        equity = pd.Series(
-            np.linspace(10000, 8000, 252),
-            index=pd.bdate_range("2020-01-01", periods=252),
-        )
-        assert r2_objective(equity) == -999.0
-
-    def test_high_drawdown_rejected(self):
-        values = np.concatenate([
-            np.linspace(10000, 12000, 126),
-            np.linspace(12000, 6000, 126),
-        ])
-        equity = pd.Series(
-            values, index=pd.bdate_range("2020-01-01", periods=252),
-        )
-        assert r2_objective(equity, max_dd_limit=0.30) == -999.0
+        obj_fn = make_objective("total_return", max_dd_limit=0.30)
+        assert obj_fn(equity) == -999.0
 
 
 # ---------------------------------------------------------------------------
-# Search space tests (R² params)
+# Search space tests
 # ---------------------------------------------------------------------------
 class TestSearchSpace:
-    def test_suggest_r2_params_returns_r2_strategy_params(self):
+    def test_suggest_params_returns_strategy_params(self):
         study = optuna.create_study()
         trial = study.ask()
-        params = suggest_r2_params(trial, R2_SEARCH_SPACE)
-        assert isinstance(params, R2StrategyParams)
+        params = suggest_params(trial, SEARCH_SPACE)
+        assert isinstance(params, StrategyParams)
 
-    def test_r2_params_hashable(self):
-        """R2StrategyParams must be hashable for dict keys."""
+    def test_params_hashable(self):
+        """StrategyParams must be hashable for dict keys."""
         study = optuna.create_study()
         params_list = []
         for _ in range(10):
             trial = study.ask()
-            params_list.append(suggest_r2_params(trial, R2_SEARCH_SPACE))
+            params_list.append(suggest_params(trial, SEARCH_SPACE))
             study.tell(trial, 1.0)
         s = set(params_list)
         assert len(s) <= len(params_list)
