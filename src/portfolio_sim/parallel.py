@@ -26,6 +26,8 @@ def init_eval_worker(
     tickers: list[str],
     initial_capital: float,
     kama_caches: dict[int, dict[str, pd.Series]],
+    high_prices: pd.DataFrame | None = None,
+    low_prices: pd.DataFrame | None = None,
 ):
     """Initialiser for evaluation worker processes."""
     _shared["close"] = close_prices
@@ -33,6 +35,8 @@ def init_eval_worker(
     _shared["tickers"] = tickers
     _shared["capital"] = initial_capital
     _shared["kama_caches"] = kama_caches
+    _shared["high"] = high_prices
+    _shared["low"] = low_prices
 
 
 def evaluate_combo(args: tuple) -> dict:
@@ -47,6 +51,8 @@ def evaluate_combo(args: tuple) -> dict:
         close = _shared["close"]
         open_ = _shared["open"]
         tickers = _shared["tickers"]
+        high = _shared.get("high")
+        low = _shared.get("low")
 
         if slice_spec is not None:
             sim_start = slice_spec.get("sim_start")
@@ -54,23 +60,29 @@ def evaluate_combo(args: tuple) -> dict:
             if sim_start:
                 close = close.loc[sim_start:]
                 open_ = open_.loc[sim_start:]
+                if high is not None:
+                    high = high.loc[sim_start:]
+                if low is not None:
+                    low = low.loc[sim_start:]
             if sim_end:
                 close = close.loc[:sim_end]
                 open_ = open_.loc[:sim_end]
+                if high is not None:
+                    high = high.loc[:sim_end]
+                if low is not None:
+                    low = low.loc[:sim_end]
             tickers = slice_spec.get("tickers", tickers)
 
         # Select KAMA cache for this param set's kama_asset_period
         kama_cache = _shared["kama_caches"].get(params.kama_asset_period)
-        # SPY KAMA from kama_spy_period cache
-        spy_kama_cache = _shared["kama_caches"].get(params.kama_spy_period, {})
-        spy_kama = spy_kama_cache.get("SPY")
 
         result = run_simulation(
             close, open_, tickers,
             _shared["capital"],
             params=params,
             kama_cache=kama_cache,
-            spy_kama_ext=spy_kama,
+            high_prices=high,
+            low_prices=low,
         )
         equity = result.equity
 

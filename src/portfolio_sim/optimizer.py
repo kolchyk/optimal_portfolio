@@ -169,18 +169,14 @@ def run_sensitivity(
     kama_caches: dict[int, dict[str, pd.Series]] | None = None,
     executor: ProcessPoolExecutor | None = None,
     verbose: bool = True,
+    high_prices: pd.DataFrame | None = None,
+    low_prices: pd.DataFrame | None = None,
 ) -> SensitivityResult:
     """Run parameter optimisation using Optuna TPE sampler."""
     base_params = base_params or StrategyParams()
     space = space or SEARCH_SPACE
     if not n_workers or n_workers < 1:
         n_workers = os.cpu_count()
-
-    log.info(
-        "sensitivity_start",
-        n_trials=n_trials,
-        n_workers=n_workers,
-    )
 
     if kama_caches is None:
         kama_periods = get_kama_periods(space)
@@ -208,7 +204,8 @@ def run_sensitivity(
         executor = ProcessPoolExecutor(
             max_workers=n_workers,
             initializer=init_eval_worker,
-            initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
+            initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches,
+                      high_prices, low_prices),
         )
         slice_spec = None
     else:
@@ -251,12 +248,6 @@ def run_sensitivity(
         base_objective = float(base_row.iloc[0]["objective"])
     else:
         base_objective = float("nan")
-
-    log.info(
-        "sensitivity_done",
-        n_valid=int((grid_df["objective"] > -999.0).sum()),
-        n_total=len(grid_df),
-    )
 
     return SensitivityResult(
         grid_results=grid_df,

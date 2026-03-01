@@ -2,6 +2,10 @@
 
 Run with: uv run streamlit run app.py
 Or: uv run python app.py (redirects to streamlit run)
+
+
+uv run python -m src.portfolio_sim walk-forward --optimize-schedule --metric calmar --refresh
+
 """
 
 import sys
@@ -23,7 +27,7 @@ st.set_page_config(
     layout="wide",
 )
 
-from pages.strategy_rules import page as strategy_rules_page  # noqa: E402
+from src.strategy_rules import page as strategy_rules_page  # noqa: E402
 
 
 def backtest_page():

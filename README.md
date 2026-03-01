@@ -118,7 +118,6 @@ regardless of whether it's a calm bond or a volatile tech stock.
 | `target_vol` | 0.10 (10%) | 0.05–0.20 | Target annual portfolio volatility |
 | `max_leverage` | 1.5 | 1.0, 1.25, 1.5, 2.0 | Maximum scaling factor |
 | `portfolio_vol_lookback` | 21 | 15–35 (step 10) | Window for estimating realized vol |
-| `corr_threshold` | 0.7 | 0.5–1.0 (step 0.1) | Correlation filter for new entries |
 
 ### Fixed Parameters
 

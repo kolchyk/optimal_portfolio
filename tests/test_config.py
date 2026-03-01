@@ -15,10 +15,10 @@ def test_constants_values():
 
 
 def test_search_space_has_expected_keys():
-    assert "r2_lookback" in SEARCH_SPACE
-    assert "target_vol" in SEARCH_SPACE
     assert "kama_asset_period" in SEARCH_SPACE
-    assert "corr_threshold" in SEARCH_SPACE
+    assert "kama_buffer" in SEARCH_SPACE
+    assert "rebal_period_weeks" in SEARCH_SPACE
+    assert "portfolio_vol_lookback" in SEARCH_SPACE
 
 
 def test_param_names_match_search_space():
@@ -33,4 +33,4 @@ def test_etf_universe_lean():
     assert "BTC-USD" not in ETF_UNIVERSE
     assert "ETH-USD" not in ETF_UNIVERSE
     # Lean universe ~37 tickers
-    assert len(ETF_UNIVERSE) == 37
+    assert len(ETF_UNIVERSE) == 61

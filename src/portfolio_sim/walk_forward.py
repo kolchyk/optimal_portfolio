@@ -121,6 +121,8 @@ def run_walk_forward(
     kama_caches: dict[int, dict[str, pd.Series]] | None = None,
     executor: ProcessPoolExecutor | None = None,
     verbose: bool = True,
+    high_prices: pd.DataFrame | None = None,
+    low_prices: pd.DataFrame | None = None,
 ) -> WFOResult:
     """Run sliding walk-forward optimisation."""
     base_params = base_params or StrategyParams()
@@ -164,7 +166,8 @@ def run_walk_forward(
         executor = ProcessPoolExecutor(
             max_workers=n_workers,
             initializer=init_eval_worker,
-            initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
+            initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches,
+                      high_prices, low_prices),
         )
 
     steps: list[WFOStep] = []
@@ -181,6 +184,8 @@ def run_walk_forward(
             # --- 1. Slice IS data ---
             close_is = close_prices.loc[is_start:is_end]
             open_is = open_prices.loc[is_start:is_end]
+            high_is = high_prices.loc[is_start:is_end] if high_prices is not None else None
+            low_is = low_prices.loc[is_start:is_end] if low_prices is not None else None
             valid_is = [
                 t for t in tickers
                 if t in close_is.columns and len(close_is[t].dropna()) >= min_is_days // 2
@@ -204,6 +209,8 @@ def run_walk_forward(
                 kama_caches=kama_caches,
                 executor=executor,
                 verbose=verbose,
+                high_prices=high_is,
+                low_prices=low_is,
             )
 
             best_params = find_best_params(sens_result)
@@ -213,14 +220,13 @@ def run_walk_forward(
 
             # IS metrics
             is_kama_cache = kama_caches.get(best_params.kama_asset_period)
-            spy_kama_cache = kama_caches.get(best_params.kama_spy_period, {})
-            spy_kama = spy_kama_cache.get("SPY")
 
             is_sim = run_simulation(
                 close_is, open_is, valid_is, initial_capital,
                 params=best_params,
                 kama_cache=is_kama_cache,
-                spy_kama_ext=spy_kama,
+                high_prices=high_is,
+                low_prices=low_is,
             )
             is_metrics = compute_metrics(is_sim.equity)
 
@@ -232,6 +238,8 @@ def run_walk_forward(
 
             close_oos_warm = close_prices.iloc[warmup_start_idx:oos_end_loc + 1]
             open_oos_warm = open_prices.iloc[warmup_start_idx:oos_end_loc + 1]
+            high_oos_warm = high_prices.iloc[warmup_start_idx:oos_end_loc + 1] if high_prices is not None else None
+            low_oos_warm = low_prices.iloc[warmup_start_idx:oos_end_loc + 1] if low_prices is not None else None
 
             valid_oos = [
                 t for t in tickers
@@ -239,13 +247,13 @@ def run_walk_forward(
             ]
 
             oos_kama_cache = kama_caches.get(best_params.kama_asset_period)
-            oos_spy_kama = spy_kama_cache.get("SPY")
 
             oos_sim = run_simulation(
                 close_oos_warm, open_oos_warm, valid_oos, initial_capital,
                 params=best_params,
                 kama_cache=oos_kama_cache,
-                spy_kama_ext=oos_spy_kama,
+                high_prices=high_oos_warm,
+                low_prices=low_oos_warm,
             )
 
             # Trim to OOS period only
@@ -329,6 +337,8 @@ def run_schedule_optimization(
     n_workers: int | None = None,
     max_dd_limit: float = MAX_DD_LIMIT,
     metric: str = "total_return",
+    high_prices: pd.DataFrame | None = None,
+    low_prices: pd.DataFrame | None = None,
 ) -> WFOResult:
     """Optimize WFO schedule params via outer Optuna loop."""
     base_params = base_params or StrategyParams()
@@ -351,7 +361,8 @@ def run_schedule_optimization(
     executor = ProcessPoolExecutor(
         max_workers=n_workers,
         initializer=init_eval_worker,
-        initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches),
+        initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches,
+                  high_prices, low_prices),
     )
 
     results: list[dict] = []
@@ -398,6 +409,8 @@ def run_schedule_optimization(
                     kama_caches=kama_caches,
                     executor=executor,
                     verbose=False,
+                    high_prices=high_prices,
+                    low_prices=low_prices,
                 )
                 sharpe = result.oos_metrics.get("sharpe", -999.0)
                 calmar = result.oos_metrics.get("calmar", -999.0)
@@ -462,6 +475,8 @@ def run_schedule_optimization(
             kama_caches=kama_caches,
             executor=executor,
             verbose=True,
+            high_prices=high_prices,
+            low_prices=low_prices,
         )
     finally:
         executor.shutdown(wait=True)
@@ -554,16 +569,15 @@ def format_wfo_report(result: WFOResult) -> str:
     lines.append("-" * 90)
     lines.append("Recommended Live Parameters (from final IS window):")
     lines.append("-" * 90)
-    lines.append(f"  r2_lookback:           {fp.r2_lookback}")
+    lines.append(f"  r2_windows:            {fp.r2_windows}")
+    lines.append(f"  r2_weights:            {fp.r2_weights}")
     lines.append(f"  kama_asset_period:     {fp.kama_asset_period}")
-    lines.append(f"  kama_spy_period:       {fp.kama_spy_period}")
     lines.append(f"  kama_buffer:           {fp.kama_buffer}")
     lines.append(f"  atr_period:            {fp.atr_period}")
     lines.append(f"  risk_factor:           {fp.risk_factor}")
     lines.append(f"  top_n:                 {fp.top_n}")
     lines.append(f"  rebal_period_weeks:    {fp.rebal_period_weeks}")
     lines.append(f"  gap_threshold:         {fp.gap_threshold}")
-    lines.append(f"  corr_threshold:        {fp.corr_threshold}")
     lines.append(f"  target_vol:            {fp.target_vol}")
     lines.append(f"  max_leverage:          {fp.max_leverage}")
     lines.append(f"  portfolio_vol_lookback: {fp.portfolio_vol_lookback}")

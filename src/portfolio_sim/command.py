@@ -111,9 +111,9 @@ def run(args) -> None:
     else:
         min_is_days = args.min_is_days
 
-    min_days = base_params.r2_lookback
+    min_days = base_params.max_r2_window
     print(f"Downloading price data ({args.period})...")
-    close_prices, open_prices = fetch_price_data(
+    close_prices, open_prices, high_prices, low_prices = fetch_price_data(
         tickers, period=args.period, refresh=args.refresh,
         cache_suffix="_etf", min_rows=min_days,
     )
@@ -149,6 +149,8 @@ def run(args) -> None:
             n_schedule_trials=args.n_schedule_trials,
             n_workers=args.n_workers,
             metric=args.metric,
+            high_prices=high_prices,
+            low_prices=low_prices,
         )
     else:
         display_is = min_is_days or 126
@@ -173,6 +175,8 @@ def run(args) -> None:
             min_is_days=min_is_days,
             oos_days=oos_days,
             metric=args.metric,
+            high_prices=high_prices,
+            low_prices=low_prices,
         )
 
     report = format_wfo_report(result)
@@ -208,15 +212,15 @@ def _save_wfo_artifacts(result, output_dir) -> None:
             "is_end": step.is_end.date(),
             "oos_start": step.oos_start.date(),
             "oos_end": step.oos_end.date(),
-            "r2_lookback": p.r2_lookback,
+            "r2_windows": str(p.r2_windows),
+            "r2_weights": str(p.r2_weights),
             "kama_asset_period": p.kama_asset_period,
-            "kama_spy_period": p.kama_spy_period,
             "kama_buffer": p.kama_buffer,
             "atr_period": p.atr_period,
             "top_n": p.top_n,
             "rebal_period_weeks": p.rebal_period_weeks,
             "gap_threshold": p.gap_threshold,
-            "corr_threshold": p.corr_threshold,
+            "max_per_class": p.max_per_class,
             "target_vol": p.target_vol,
             "max_leverage": p.max_leverage,
             "portfolio_vol_lookback": p.portfolio_vol_lookback,
@@ -236,10 +240,11 @@ def _save_wfo_artifacts(result, output_dir) -> None:
 
     fp = result.final_params
     print(f"\nRecommended live parameters:")
-    print(f"  r2_lookback={fp.r2_lookback}, kama_asset={fp.kama_asset_period}, "
-          f"kama_spy={fp.kama_spy_period}, kama_buffer={fp.kama_buffer}")
+    print(f"  r2_windows={fp.r2_windows}, r2_weights={fp.r2_weights}")
+    print(f"  kama_asset={fp.kama_asset_period}, "
+          f"kama_buffer={fp.kama_buffer}")
     print(f"  atr_period={fp.atr_period}, top_n={fp.top_n}, "
           f"rebal={fp.rebal_period_weeks}w, gap={fp.gap_threshold}")
     print(f"  target_vol={fp.target_vol}, max_leverage={fp.max_leverage}, "
           f"portfolio_vol_lookback={fp.portfolio_vol_lookback}")
-    print(f"  corr_threshold={fp.corr_threshold}")
+    print(f"  max_per_class={fp.max_per_class}")

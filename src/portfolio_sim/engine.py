@@ -2,22 +2,25 @@
 
 Combines the best elements of R2 (Clenow R² Momentum) and vol-targeting:
   - R² Momentum scoring: annualized OLS slope × R² for asset ranking
-  - KAMA trend filter + correlation filter for entry
+  - KAMA trend filter + per-class sector limits for entry
   - ATR risk parity position sizing (Clenow-style)
   - Hybrid rebalancing: periodic rotation + daily KAMA-break/gap exits
   - Vol-targeting overlay: scales positions by target_vol / realised_vol
-  - SPY KAMA regime filter for risk-on / risk-off
 """
 
 from __future__ import annotations
 
+from collections import Counter
+
 import numpy as np
 import pandas as pd
+from numba import njit
 from tqdm import tqdm
 
 from src.portfolio_sim.config import (
     ASSET_CLASS_MAP,
     COMMISSION_RATE,
+    MARGIN_SPREAD,
     RISK_FREE_RATE,
     SLIPPAGE_RATE,
     SPY_TICKER,
@@ -26,10 +29,6 @@ from src.portfolio_sim.indicators import compute_kama_series
 from src.portfolio_sim.models import SimulationResult
 from src.portfolio_sim.params import StrategyParams
 
-_SAFE_HAVEN_CLASSES = frozenset({
-    "Long Bonds", "Mid Bonds", "Short Bonds", "Corporate Bonds", "Metals",
-})
-
 COST_RATE = COMMISSION_RATE + SLIPPAGE_RATE
 DAILY_RF = (1 + RISK_FREE_RATE) ** (1 / 252) - 1
 
@@ -37,6 +36,7 @@ DAILY_RF = (1 + RISK_FREE_RATE) ** (1 / 252) - 1
 # ---------------------------------------------------------------------------
 # Vectorized rolling R² Momentum scoring
 # ---------------------------------------------------------------------------
+@njit(cache=True)
 def _compute_rolling_r2_scores(log_prices: np.ndarray, lookback: int) -> np.ndarray:
     """Compute rolling R² Momentum scores for a single ticker.
 
@@ -74,23 +74,41 @@ def _compute_rolling_r2_scores(log_prices: np.ndarray, lookback: int) -> np.ndar
     return scores
 
 
-def _precompute_r2_score_df(
+def _precompute_blended_r2_score_df(
     close_prices: pd.DataFrame,
     ticker_cols: list[str],
-    r2_lookback: int,
+    r2_windows: tuple[int, ...],
+    r2_weights: tuple[float, ...],
 ) -> pd.DataFrame:
-    """Pre-compute R² momentum scores for all tickers × dates."""
-    r2_score_df = pd.DataFrame(
-        np.nan, index=close_prices.index, columns=ticker_cols,
-    )
-    for t in ticker_cols:
-        ser = close_prices[t].dropna()
-        if len(ser) < r2_lookback:
-            continue
-        log_p = np.log(ser.values)
-        scores = _compute_rolling_r2_scores(log_p, r2_lookback)
-        r2_score_df.loc[ser.index, t] = scores
-    return r2_score_df
+    """Pre-compute blended R² momentum scores across multiple lookback windows.
+
+    For each window, computes annualized_return × R² for all tickers,
+    then returns the weighted average with renormalized weights for partial
+    availability (shorter windows produce valid scores before longer ones).
+    """
+    window_dfs: list[pd.DataFrame] = []
+    for window in r2_windows:
+        single_df = pd.DataFrame(
+            np.nan, index=close_prices.index, columns=ticker_cols,
+        )
+        for t in ticker_cols:
+            ser = close_prices[t].dropna()
+            if len(ser) < window:
+                continue
+            log_p = np.log(ser.values)
+            scores = _compute_rolling_r2_scores(log_p, window)
+            single_df.loc[ser.index, t] = scores
+        window_dfs.append(single_df)
+
+    blended = pd.DataFrame(0.0, index=close_prices.index, columns=ticker_cols)
+    weight_sum = pd.DataFrame(0.0, index=close_prices.index, columns=ticker_cols)
+
+    for df, weight in zip(window_dfs, r2_weights):
+        valid = df.notna()
+        blended += df.fillna(0.0) * weight
+        weight_sum += valid.astype(float) * weight
+
+    return blended / weight_sum.replace(0.0, np.nan)
 
 
 # ---------------------------------------------------------------------------
@@ -137,13 +155,14 @@ def run_simulation(
     initial_capital: float,
     params: StrategyParams | None = None,
     kama_cache: dict[str, pd.Series] | None = None,
-    spy_kama_ext: pd.Series | None = None,
     show_progress: bool = False,
+    high_prices: pd.DataFrame | None = None,
+    low_prices: pd.DataFrame | None = None,
 ) -> SimulationResult:
     """Run hybrid bar-by-bar simulation.
 
     Combines R² Momentum scoring, ATR risk parity sizing, KAMA filters,
-    gap-based exits, correlation filter, and vol-targeting overlay.
+    gap-based exits, and vol-targeting overlay.
     """
     p = params or StrategyParams()
 
@@ -159,23 +178,30 @@ def run_simulation(
                     close_prices[t].dropna(), period=p.kama_asset_period,
                 )
 
-    if spy_kama_ext is not None:
-        spy_kama_series = spy_kama_ext
-    else:
-        spy_prices_full = close_prices[SPY_TICKER].dropna()
-        spy_kama_series = compute_kama_series(spy_prices_full, period=p.kama_spy_period)
-
     # ------------------------------------------------------------------
     # 0b. Pre-compute vectorised matrices
     # ------------------------------------------------------------------
     _ticker_cols = [t for t in tickers if t in close_prices.columns]
     _prices = close_prices[_ticker_cols]
 
-    # R² Momentum scores (vectorized rolling OLS)
-    r2_score_df = _precompute_r2_score_df(_prices, _ticker_cols, p.r2_lookback)
+    # R² Momentum scores (blended ensemble across multiple windows)
+    r2_score_df = _precompute_blended_r2_score_df(
+        _prices, _ticker_cols, p.r2_windows, p.r2_weights,
+    )
 
-    # ATR matrix (close-to-close absolute changes, rolling mean)
-    atr_df = _prices.diff().abs().rolling(p.atr_period, min_periods=1).mean()
+    # True ATR: max(H-L, |H-C_prev|, |L-C_prev|), rolling mean
+    if high_prices is not None and low_prices is not None:
+        _high = high_prices[_ticker_cols]
+        _low = low_prices[_ticker_cols]
+        _prev_close = _prices.shift(1)
+        tr1 = _high - _low
+        tr2 = (_high - _prev_close).abs()
+        tr3 = (_low - _prev_close).abs()
+        true_range = np.maximum(np.maximum(tr1, tr2), tr3)
+        atr_df = true_range.rolling(p.atr_period, min_periods=1).mean()
+    else:
+        # Fallback: close-to-close when high/low not available
+        atr_df = _prices.diff().abs().rolling(p.atr_period, min_periods=1).mean()
 
     # Returns for correlation filter
     returns_df = _prices.pct_change()
@@ -266,7 +292,7 @@ def run_simulation(
             pending_weights = None
 
         # --- Vol-targeting trim on Open ---
-        if current_scale < 1.0 and shares:
+        if shares:
             equity_at_open = cash + sum(
                 shares[t] * daily_open.get(t, 0.0) for t in shares
             )
@@ -300,9 +326,12 @@ def run_simulation(
                     )
                     cash = equity_at_open - held_value_new - trim_cost
 
-        # --- Cash earns risk-free rate ---
+        # --- Cash earns risk-free rate / margin cost ---
         if cash > 0:
             cash *= 1 + DAILY_RF
+        elif cash < 0:
+            margin_rate = DAILY_RF + MARGIN_SPREAD / 252
+            cash *= 1 + margin_rate
 
         # --- Mark-to-market on Close ---
         equity_value = cash + sum(
@@ -336,15 +365,6 @@ def run_simulation(
             else:
                 current_scale = p.max_leverage
 
-        # --- SPY KAMA regime filter ---
-        spy_kama_val = spy_kama_series.get(date, np.nan)
-        spy_close_val = daily_close.get(SPY_TICKER, np.nan)
-        risk_off = (
-            not np.isnan(spy_kama_val)
-            and not np.isnan(spy_close_val)
-            and spy_close_val < spy_kama_val * (1 - p.kama_buffer)
-        )
-
         # --- DAILY exit checks (fast response) ---
         sells: dict[str, float] = {}
         kama_row = (
@@ -353,25 +373,19 @@ def run_simulation(
             else pd.Series(dtype=float)
         )
 
-        if risk_off:
-            # Risk-off: sell all risky assets, keep safe havens
-            for t in list(shares.keys()):
-                if ASSET_CLASS_MAP.get(t, "US Equity") not in _SAFE_HAVEN_CLASSES:
+        for t in list(shares.keys()):
+            # Exit 1: KAMA trend break
+            t_kama = kama_row.get(t, np.nan)
+            if not np.isnan(t_kama):
+                if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
                     sells[t] = 0.0
-        else:
-            for t in list(shares.keys()):
-                # Exit 1: KAMA trend break
-                t_kama = kama_row.get(t, np.nan)
-                if not np.isnan(t_kama):
-                    if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
-                        sells[t] = 0.0
-                        continue
+                    continue
 
-                # Exit 2: Gap detection (|daily_return| > gap_threshold)
-                if t in returns_df.columns and date in returns_df.index:
-                    daily_ret = returns_df.at[date, t]
-                    if not np.isnan(daily_ret) and abs(daily_ret) > p.gap_threshold:
-                        sells[t] = 0.0
+            # Exit 2: Gap detection (|daily_return| > gap_threshold)
+            if t in returns_df.columns and date in returns_df.index:
+                daily_ret = returns_df.at[date, t]
+                if not np.isnan(daily_ret) and abs(daily_ret) > p.gap_threshold:
+                    sells[t] = 0.0
 
         # --- PERIODIC rotation (every N weeks) ---
         is_rebalance_day = date in rebalance_dates
@@ -385,14 +399,7 @@ def run_simulation(
                 else pd.Series(dtype=float)
             )
 
-            # Determine eligible tickers based on regime
-            if risk_off:
-                scan_tickers = [
-                    t for t in _ticker_cols
-                    if ASSET_CLASS_MAP.get(t, "US Equity") in _SAFE_HAVEN_CLASSES
-                ]
-            else:
-                scan_tickers = _ticker_cols
+            scan_tickers = _ticker_cols
 
             # Apply KAMA trend filter + R² score filter
             scored: dict[str, float] = {}
@@ -414,51 +421,28 @@ def run_simulation(
             extended_top = set(all_ranked[: p.top_n * 2])
 
             # Rotation stop: held asset fell out of extended ranking
-            if not risk_off:
-                for t in list(shares.keys()):
-                    if t not in sells and t not in extended_top:
-                        sells[t] = 0.0
+            for t in list(shares.keys()):
+                if t not in sells and t not in extended_top:
+                    sells[t] = 0.0
 
-            # Correlation filter (greedy)
-            if p.corr_threshold < 1.0 and all_ranked:
-                held_after_sells = [t for t in shares if t not in sells]
-                row_idx = warmup + i
-                corr_start = max(0, row_idx - p.r2_lookback + 1)
-                recent_rets = returns_df.iloc[corr_start: row_idx + 1]
+            # Per-class position count (held after sells)
+            held_class_count = Counter(
+                ASSET_CLASS_MAP.get(t, "US Equity")
+                for t in shares if t not in sells
+            )
 
-                filtered: list[str] = []
-                existing = list(held_after_sells)
-                for t in all_ranked:
-                    if t in shares and t not in sells:
-                        continue  # already held
-                    if not existing:
-                        filtered.append(t)
-                        existing.append(t)
-                        continue
-
-                    valid_cols = [c for c in existing + [t] if c in recent_rets.columns]
-                    if len(valid_cols) >= 2 and t in recent_rets.columns:
-                        corr_matrix = recent_rets[valid_cols].corr(min_periods=5)
-                        if t in corr_matrix.columns:
-                            max_corr = corr_matrix[t].drop(t, errors="ignore").max()
-                            if np.isnan(max_corr) or max_corr <= p.corr_threshold:
-                                filtered.append(t)
-                                existing.append(t)
-                        else:
-                            filtered.append(t)
-                            existing.append(t)
-                    else:
-                        filtered.append(t)
-                        existing.append(t)
-
-                    if len(filtered) >= p.top_n:
-                        break
-                candidates = filtered[:p.top_n]
-            else:
-                candidates = [
-                    t for t in all_ranked[:p.top_n]
-                    if t not in shares or t in sells
-                ]
+            # Select candidates with per-class limits
+            candidates = []
+            for t in all_ranked:
+                if t in shares and t not in sells:
+                    continue
+                t_class = ASSET_CLASS_MAP.get(t, "US Equity")
+                if held_class_count[t_class] >= p.max_per_class:
+                    continue
+                candidates.append(t)
+                held_class_count[t_class] += 1
+                if len(candidates) >= p.top_n:
+                    break
 
         # --- Build trade instructions ---
         new_trades: dict[str, float] = {}
@@ -540,9 +524,9 @@ def _execute_trades(
     held_value = sum(shares[t] * open_prices.get(t, 0.0) for t in shares)
     available = equity_at_open - held_value - total_cost
 
-    # Scale budget for new buys by vol-targeting
-    target_invested = equity_at_open * min(scale, 1.0)
-    budget_for_buys = max(0.0, min(target_invested - held_value, available))
+    # Scale budget for new buys by vol-targeting (scale already bounded by max_leverage)
+    target_invested = equity_at_open * scale
+    budget_for_buys = max(0.0, target_invested - held_value - total_cost)
 
     buys = [t for t, action in trades.items() if action == 1.0 and t not in shares]
     if buys and budget_for_buys > 0:

@@ -95,12 +95,6 @@ def _inject_css():
         .metric-card.negative .value { color: #EF4444; }
         .metric-card.neutral { border-left: 3px solid #64748B; }
         .metric-card.neutral .value { color: #E2E8F0; }
-        .metric-card .label .tooltip-icon {
-            color: #475569;
-            font-size: 0.65rem;
-            cursor: help;
-            margin-left: 4px;
-        }
         .section-divider {
             border-top: 1px solid #1F2937;
             margin: 2rem 0 1.5rem 0;
@@ -183,91 +177,76 @@ def _fetch_prices_impl(tickers_tuple: tuple, refresh: bool, cache_suffix: str = 
 
 
 # ---------------------------------------------------------------------------
+# Parameter fingerprint for auto-rerun
+# ---------------------------------------------------------------------------
+def _param_fingerprint(sidebar: dict) -> tuple:
+    """Return a hashable fingerprint of all strategy + data parameters."""
+    return (
+        sidebar["data_years"],
+        sidebar["initial_capital"],
+        sidebar["top_n"],
+        sidebar["kama_asset_period"],
+        sidebar["kama_buffer"],
+        sidebar["rebal_period_weeks"],
+        sidebar["gap_threshold"],
+        sidebar["atr_period"],
+        sidebar["risk_factor"],
+        sidebar["max_per_class"],
+        sidebar["target_vol"],
+        sidebar["max_leverage"],
+        sidebar["portfolio_vol_lookback"],
+    )
+
+
+# ---------------------------------------------------------------------------
 # Metric card HTML
 # ---------------------------------------------------------------------------
-def _card_html(label: str, value: str, positive: bool | None = None, tooltip: str = "") -> str:
+def _card_html(label: str, value: str, positive: bool | None = None) -> str:
     if positive is None:
         cls = "neutral"
     elif positive:
         cls = "positive"
     else:
         cls = "negative"
-    tip = f' <span class="tooltip-icon" title="{tooltip}">&#9432;</span>' if tooltip else ""
     return (
         f'<div class="metric-card {cls}">'
-        f'<div class="label">{label}{tip}</div>'
+        f'<div class="label">{label}</div>'
         f'<div class="value">{value}</div>'
         f"</div>"
     )
-
-
-_METRIC_TOOLTIPS = {
-    "Total Return": "Total profit or loss as a percentage of your starting investment",
-    "CAGR": "Average annual growth rate, as if your portfolio grew steadily each year",
-    "Max Drawdown": "The worst peak-to-trough decline — how much you could have lost at the worst moment",
-    "Sharpe": "Return per unit of risk. Above 1.0 is good, above 2.0 is excellent",
-    "Calmar": "Annual return divided by max drawdown. Higher means better risk-adjusted returns",
-    "Ann. Volatility": "How much your portfolio fluctuates per year. Lower means a smoother ride",
-    "Win Rate": "Percentage of trading days with a positive return",
-}
 
 
 def _render_metric_row(title: str, m: dict):
     st.markdown(f"**{title}**")
     cols = st.columns(7)
     cols[0].markdown(
-        _card_html("Total Return", f"{m['total_return']:.1%}", m["total_return"] >= 0,
-                    _METRIC_TOOLTIPS["Total Return"]),
+        _card_html("Total Return", f"{m['total_return']:.1%}", m["total_return"] >= 0),
         unsafe_allow_html=True,
     )
     cols[1].markdown(
-        _card_html("CAGR", f"{m['cagr']:.1%}", m["cagr"] >= 0,
-                    _METRIC_TOOLTIPS["CAGR"]),
+        _card_html("CAGR", f"{m['cagr']:.1%}", m["cagr"] >= 0),
         unsafe_allow_html=True,
     )
     cols[2].markdown(
-        _card_html("Max Drawdown", f"{-m['max_drawdown']:.1%}", False,
-                    _METRIC_TOOLTIPS["Max Drawdown"]),
+        _card_html("Max Drawdown", f"{-m['max_drawdown']:.1%}", False),
         unsafe_allow_html=True,
     )
     cols[3].markdown(
-        _card_html("Sharpe", f"{m['sharpe']:.2f}", m["sharpe"] >= 0,
-                    _METRIC_TOOLTIPS["Sharpe"]),
+        _card_html("Sharpe", f"{m['sharpe']:.2f}", m["sharpe"] >= 0),
         unsafe_allow_html=True,
     )
     cols[4].markdown(
-        _card_html("Calmar", f"{m['calmar']:.2f}", m["calmar"] >= 0,
-                    _METRIC_TOOLTIPS["Calmar"]),
+        _card_html("Calmar", f"{m['calmar']:.2f}", m["calmar"] >= 0),
         unsafe_allow_html=True,
     )
     cols[5].markdown(
-        _card_html("Ann. Volatility", f"{m['annualized_vol']:.1%}", None,
-                    _METRIC_TOOLTIPS["Ann. Volatility"]),
+        _card_html("Ann. Volatility", f"{m['annualized_vol']:.1%}", None),
         unsafe_allow_html=True,
     )
     cols[6].markdown(
-        _card_html("Win Rate", f"{m['win_rate']:.1%}", m["win_rate"] >= 0.5,
-                    _METRIC_TOOLTIPS["Win Rate"]),
+        _card_html("Win Rate", f"{m['win_rate']:.1%}", m["win_rate"] >= 0.5),
         unsafe_allow_html=True,
     )
-
-
-# ---------------------------------------------------------------------------
-# Comparison table
-# ---------------------------------------------------------------------------
-def _render_comparison_table(strat_m: dict, spy_m: dict):
-    rows = {
-        "Total Return": (f"{strat_m['total_return']:.1%}", f"{spy_m['total_return']:.1%}"),
-        "CAGR": (f"{strat_m['cagr']:.1%}", f"{spy_m['cagr']:.1%}"),
-        "Max Drawdown": (f"{-strat_m['max_drawdown']:.1%}", f"{-spy_m['max_drawdown']:.1%}"),
-        "Sharpe Ratio": (f"{strat_m['sharpe']:.2f}", f"{spy_m['sharpe']:.2f}"),
-        "Calmar Ratio": (f"{strat_m['calmar']:.2f}", f"{spy_m['calmar']:.2f}"),
-        "Ann. Volatility": (f"{strat_m['annualized_vol']:.1%}", f"{spy_m['annualized_vol']:.1%}"),
-        "Win Rate": (f"{strat_m['win_rate']:.1%}", f"{spy_m['win_rate']:.1%}"),
-        "Trading Days": (f"{strat_m['n_days']:,}", f"{spy_m['n_days']:,}"),
-    }
-    df = pd.DataFrame(rows, index=["Strategy", "S&P 500"]).T
-    st.dataframe(df, width="stretch")
 
 
 # ---------------------------------------------------------------------------
@@ -701,15 +680,9 @@ def _render_sidebar() -> dict:
             unsafe_allow_html=True,
         )
 
-        run_clicked = st.button(
-            "Run Backtest",
-            type="primary",
-            width="stretch",
-        )
-
         optimize_clicked = st.button(
             "Run Optimization",
-            type="secondary",
+            type="primary",
             width="stretch",
             help="Walk-Forward Optimization: find best parameters on IS window, validate on OOS.",
         )
@@ -752,12 +725,11 @@ def _render_sidebar() -> dict:
 
             opt = st.session_state.get("optimized_params")
 
-            _default_r2_lb = opt.r2_lookback if opt else _DEFAULTS.r2_lookback
-            r2_lookback = st.slider(
-                "R\u00b2 Lookback (days)", min_value=20, max_value=120, step=20,
-                value=_default_r2_lb,
-                help="OLS regression window for momentum scoring (Clenow method)",
+            _ensemble_label = " + ".join(
+                f"{w:.0%}×{win}d"
+                for win, w in zip(_DEFAULTS.r2_windows, _DEFAULTS.r2_weights)
             )
+            st.caption(f"R² Ensemble: {_ensemble_label}")
 
             _default_top_n = opt.top_n if opt else _DEFAULTS.top_n
             top_n = st.slider(
@@ -771,13 +743,6 @@ def _render_sidebar() -> dict:
             kama_asset_period = st.slider(
                 "KAMA Period (asset)", min_value=10, max_value=50, value=_default_kama,
                 help="KAMA for individual asset trend filter (trading days)",
-            )
-
-            _default_kama_spy = opt.kama_spy_period if opt else _DEFAULTS.kama_spy_period
-            kama_spy_period = st.slider(
-                "KAMA Period (SPY)", min_value=10, max_value=60,
-                value=_default_kama_spy,
-                help="KAMA period for SPY regime filter (trading days)",
             )
 
             _default_buffer = opt.kama_buffer if opt else _DEFAULTS.kama_buffer
@@ -818,11 +783,11 @@ def _render_sidebar() -> dict:
                 help="Daily risk per position (Clenow default: 0.001 = 10 bps)",
             )
 
-            _default_corr = opt.corr_threshold if opt else _DEFAULTS.corr_threshold
-            corr_threshold = st.slider(
-                "Correlation Threshold", min_value=0.5, max_value=1.0,
-                value=float(_default_corr), step=0.1, format="%.1f",
-                help="Correlation filter for new entries to ensure diversification",
+            _default_mpc = opt.max_per_class if opt else _DEFAULTS.max_per_class
+            max_per_class = st.slider(
+                "Max Per Asset Class", min_value=1, max_value=10, step=1,
+                value=_default_mpc,
+                help="Maximum positions from the same asset class",
             )
 
             _default_tvol = opt.target_vol if opt else _DEFAULTS.target_vol
@@ -853,20 +818,17 @@ def _render_sidebar() -> dict:
         "opt_oos_days": opt_oos_days,
         "opt_min_is_days": opt_min_is_days,
         "initial_capital": float(initial_capital),
-        "r2_lookback": r2_lookback,
         "top_n": top_n,
         "kama_asset_period": kama_asset_period,
-        "kama_spy_period": kama_spy_period,
         "kama_buffer": kama_buffer,
         "rebal_period_weeks": rebal_period_weeks,
         "gap_threshold": gap_threshold,
         "atr_period": atr_period,
         "risk_factor": risk_factor,
-        "corr_threshold": corr_threshold,
+        "max_per_class": max_per_class,
         "target_vol": target_vol,
         "max_leverage": max_leverage,
         "portfolio_vol_lookback": portfolio_vol_lookback,
-        "run_clicked": run_clicked,
         "optimize_clicked": optimize_clicked,
     }
 
@@ -938,12 +900,12 @@ def _render_optimization_results() -> None:
             fp = wfo.final_params
             st.info(
                 f"Recommended live params: "
-                f"R\u00b2 LB={fp.r2_lookback}, KAMA Asset={fp.kama_asset_period}, "
-                f"KAMA SPY={fp.kama_spy_period}, "
+                f"KAMA Asset={fp.kama_asset_period}, "
                 f"Buffer={fp.kama_buffer}, Top N={fp.top_n}, "
                 f"Rebal={fp.rebal_period_weeks}w, "
                 f"Target Vol={fp.target_vol:.0%}, "
-                f"Max Lev={fp.max_leverage}"
+                f"Max Lev={fp.max_leverage}, "
+                f"Max/Class={fp.max_per_class}"
             )
 
 
@@ -955,11 +917,11 @@ def _fetch_data(sidebar: dict, cached_fetch_etf, cached_fetch_prices):
     universe = cached_fetch_etf()
     period = f"{sidebar['data_years']}y"
     cache_suffix = f"_etf_{period}"
-    close_prices, open_prices = cached_fetch_prices(
+    close_prices, open_prices, high_prices, low_prices = cached_fetch_prices(
         tuple(sorted(universe)), sidebar["refresh"],
         cache_suffix=cache_suffix, period=period,
     )
-    return close_prices, open_prices
+    return close_prices, open_prices, high_prices, low_prices
 
 
 # ---------------------------------------------------------------------------
@@ -980,9 +942,9 @@ def main():
         "Long/Cash \u00b7 Cross-Asset ETFs \u00b7 R\u00b2 Momentum \u00b7 ATR Risk Parity \u00b7 Vol-Targeting"
     )
 
-    # --- Path 1: Run Optimization (slow) ---
+    # --- Path 1: Run Optimization (slow, button-gated) ---
     if sidebar["optimize_clicked"]:
-        close_prices, open_prices = _fetch_data(sidebar, cached_fetch_etf, cached_fetch_prices)
+        close_prices, open_prices, high_prices, low_prices = _fetch_data(sidebar, cached_fetch_etf, cached_fetch_prices)
 
         params = StrategyParams()
         valid = filter_valid_tickers(close_prices, params.warmup)
@@ -1001,18 +963,19 @@ def main():
                     n_trials_per_step=n_trials,
                     oos_days=sidebar["opt_oos_days"],
                     min_is_days=sidebar["opt_min_is_days"],
+                    high_prices=high_prices,
+                    low_prices=low_prices,
                 )
                 best = wfo_result.final_params
                 st.session_state["opt_detail"] = ("wfo", wfo_result)
 
             st.session_state["optimized_params"] = best
             st.toast(
-                f"Optimal: R\u00b2 LB={best.r2_lookback}, "
-                f"KAMA={best.kama_asset_period}, "
-                f"SPY={best.kama_spy_period}, "
+                f"Optimal: KAMA={best.kama_asset_period}, "
                 f"Top N={best.top_n}, "
                 f"Rebal={best.rebal_period_weeks}w, "
-                f"Vol={best.target_vol:.0%}",
+                f"Vol={best.target_vol:.0%}, "
+                f"Max/Class={best.max_per_class}",
                 icon="\u2705",
             )
 
@@ -1021,76 +984,61 @@ def main():
                     close_prices, open_prices, valid,
                     initial_capital=sidebar["initial_capital"],
                     params=best,
+                    high_prices=high_prices,
+                    low_prices=low_prices,
                 )
 
             st.session_state["result"] = result
             st.session_state["close_prices"] = close_prices
-            st.session_state["is_default_run"] = False
+            st.session_state["params"] = best
+            st.session_state["_param_hash"] = _param_fingerprint(sidebar)
 
         except ValueError as e:
             st.error(f"Optimization failed: {e}")
 
-    # --- Path 2: Run Backtest (quick) ---
-    elif sidebar["run_clicked"]:
-        close_prices, open_prices = _fetch_data(sidebar, cached_fetch_etf, cached_fetch_prices)
+    # --- Path 2: Auto-rerun backtest when parameters change ---
+    else:
+        current_hash = _param_fingerprint(sidebar)
+        prev_hash = st.session_state.get("_param_hash")
 
-        params = StrategyParams(
-            r2_lookback=sidebar["r2_lookback"],
-            top_n=sidebar["top_n"],
-            kama_asset_period=sidebar["kama_asset_period"],
-            kama_spy_period=sidebar["kama_spy_period"],
-            kama_buffer=sidebar["kama_buffer"],
-            rebal_period_weeks=sidebar["rebal_period_weeks"],
-            gap_threshold=sidebar["gap_threshold"],
-            atr_period=sidebar["atr_period"],
-            risk_factor=sidebar["risk_factor"],
-            corr_threshold=sidebar["corr_threshold"],
-            target_vol=sidebar["target_vol"],
-            max_leverage=sidebar["max_leverage"],
-            portfolio_vol_lookback=sidebar["portfolio_vol_lookback"],
-        )
+        if sidebar["refresh"]:
+            prev_hash = None  # force rerun on data refresh
 
-        valid = filter_valid_tickers(close_prices, params.warmup)
+        if current_hash != prev_hash or "result" not in st.session_state:
+            close_prices, open_prices, high_prices, low_prices = _fetch_data(sidebar, cached_fetch_etf, cached_fetch_prices)
 
-        with st.spinner(f"Running simulation on {len(valid)} tickers..."):
-            result = run_simulation(
-                close_prices, open_prices, valid,
-                initial_capital=sidebar["initial_capital"],
-                params=params,
+            params = StrategyParams(
+                top_n=sidebar["top_n"],
+                kama_asset_period=sidebar["kama_asset_period"],
+                kama_buffer=sidebar["kama_buffer"],
+                rebal_period_weeks=sidebar["rebal_period_weeks"],
+                gap_threshold=sidebar["gap_threshold"],
+                atr_period=sidebar["atr_period"],
+                risk_factor=sidebar["risk_factor"],
+                max_per_class=sidebar["max_per_class"],
+                target_vol=sidebar["target_vol"],
+                max_leverage=sidebar["max_leverage"],
+                portfolio_vol_lookback=sidebar["portfolio_vol_lookback"],
             )
 
-        st.session_state["result"] = result
-        st.session_state["close_prices"] = close_prices
-        st.session_state["params"] = params
-        st.session_state["is_default_run"] = False
+            valid = filter_valid_tickers(close_prices, params.warmup)
 
-    # --- Default auto-run on first load ---
-    if "result" not in st.session_state:
-        universe = cached_fetch_etf()
-        close_prices, open_prices = cached_fetch_prices(
-            tuple(sorted(universe)), False, cache_suffix="_etf_3y", period="3y",
-        )
-        params = StrategyParams()
-        valid = filter_valid_tickers(close_prices, params.warmup)
-        with st.spinner("Running initial backtest with default parameters..."):
-            result = run_simulation(
-                close_prices, open_prices, valid,
-                initial_capital=INITIAL_CAPITAL, params=params,
-            )
-        st.session_state["result"] = result
-        st.session_state["close_prices"] = close_prices
-        st.session_state["params"] = params
-        st.session_state["is_default_run"] = True
+            with st.spinner(f"Running simulation on {len(valid)} tickers..."):
+                result = run_simulation(
+                    close_prices, open_prices, valid,
+                    initial_capital=sidebar["initial_capital"],
+                    params=params,
+                    high_prices=high_prices,
+                    low_prices=low_prices,
+                )
+
+            st.session_state["result"] = result
+            st.session_state["close_prices"] = close_prices
+            st.session_state["params"] = params
+            st.session_state["_param_hash"] = current_hash
 
     result: SimulationResult = st.session_state["result"]
     close_prices: pd.DataFrame = st.session_state["close_prices"]
-
-    if st.session_state.get("is_default_run", False):
-        st.info(
-            "Showing results with **default parameters**. "
-            "Adjust parameters in the sidebar and click **Run Backtest** to customize, "
-            "or click **Run Optimization** to find optimal parameters."
-        )
 
     strat_m = compute_metrics(result.equity)
     spy_m = compute_metrics(result.spy_equity)
@@ -1112,11 +1060,7 @@ def main():
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
-    # --- Section 2: Comparison Table ---
-    with st.expander("Detailed Comparison", expanded=False):
-        _render_comparison_table(strat_m, spy_m)
-
-    # --- Section 3: Equity Curve ---
+    # --- Section 2: Equity Curve ---
     st.markdown('<div class="section-header">EQUITY CURVE</div>', unsafe_allow_html=True)
     log_scale = st.checkbox("Log scale", value=False)
     st.plotly_chart(
@@ -1167,7 +1111,29 @@ def main():
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
-    # --- Section 8: Trade Log ---
+    # --- Section 8: Asset Signal Analysis ---
+    st.markdown('<div class="section-header">SIGNAL ANALYSIS</div>', unsafe_allow_html=True)
+    if result.trade_log:
+        traded_tickers = sorted({t["ticker"] for t in result.trade_log})
+        params: StrategyParams = st.session_state.get("params", StrategyParams())
+        selected_ticker = st.selectbox(
+            "Select asset", traded_tickers, index=0,
+        )
+        st.plotly_chart(
+            plot_asset_signals(
+                selected_ticker, close_prices,
+                kama_period=params.kama_asset_period,
+                kama_buffer=params.kama_buffer,
+                trade_log=result.trade_log,
+            ),
+            width="stretch",
+        )
+    else:
+        st.info("No trades recorded — run a backtest first.")
+
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+
+    # --- Section 9: Trade Log ---
     st.markdown('<div class="section-header">TRADE LOG</div>', unsafe_allow_html=True)
     with st.expander("Trade Log", expanded=False):
         _render_trade_log(result)
