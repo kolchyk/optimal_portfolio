@@ -16,16 +16,22 @@ RISK_FREE_RATE: float = 0.04
 # ---------------------------------------------------------------------------
 # R² Momentum strategy parameters (Clenow-style)
 # ---------------------------------------------------------------------------
-KAMA_PERIOD: int = 40       # KAMA period for individual asset trend filter
+KAMA_PERIOD: int = 10       # KAMA period for individual asset trend filter
 KAMA_SPY_PERIOD: int = 40   # KAMA period for SPY regime filter
-TOP_N: int = 10
-KAMA_BUFFER: float = 0.01   # hysteresis buffer for KAMA filters
-R2_LOOKBACK: int = 90       # OLS regression lookback (Clenow standard)
-GAP_THRESHOLD: float = 0.15 # exclude assets with >15% single-day gap
+TOP_N: int = 5
+KAMA_BUFFER: float = 0.005  # hysteresis buffer for KAMA filters
+R2_LOOKBACK: int = 60       # OLS regression lookback
+GAP_THRESHOLD: float = 0.175  # exclude assets with >17.5% single-day gap
 ATR_PERIOD: int = 20        # ATR lookback for position sizing
 RISK_FACTOR: float = 0.001  # risk per position per day (Clenow default)
-REBAL_PERIOD_WEEKS: int = 2 # rebalance check every N weeks
-OOS_DAYS: int = 21
+REBAL_PERIOD_WEEKS: int = 3 # rebalance check every N weeks
+OOS_DAYS: int = 90
+
+# ---------------------------------------------------------------------------
+# WFO schedule defaults (from schedule optimization 2026-03-01)
+# ---------------------------------------------------------------------------
+WFO_OOS_DAYS: int = 90      # OOS window (18 weeks × 5)
+WFO_MIN_IS_DAYS: int = 90   # IS window (18 weeks × 5)
 
 # ---------------------------------------------------------------------------
 # Tickers
@@ -111,10 +117,26 @@ R2_SEARCH_SPACE: dict[str, dict] = {
 
 DEFAULT_N_TRIALS: int = 50
 
+
+def compute_max_warmup_from_space(space: dict[str, dict]) -> int:
+    """Compute worst-case warmup days from an R² search space.
+
+    warmup = max(r2_lookback, kama_asset_period, kama_spy_period) + 10
+    """
+    def _max_val(spec: dict) -> int:
+        if spec.get("type") == "categorical":
+            return max(spec["choices"])
+        return spec.get("high", 0)
+
+    r2_max = _max_val(space.get("r2_lookback", {"high": 120}))
+    kama_asset_max = _max_val(space.get("kama_asset_period", {"high": 50}))
+    kama_spy_max = _max_val(space.get("kama_spy_period", {"high": 50}))
+    return max(r2_max, kama_asset_max, kama_spy_max) + 10
+
 # ---------------------------------------------------------------------------
 # Schedule search space (WFO window optimization)
 # ---------------------------------------------------------------------------
 SCHEDULE_SEARCH_SPACE: dict[str, dict] = {
-    "oos_weeks": {"type": "int", "low": 2, "high": 20, "step": 2},
-    "min_is_weeks": {"type": "int", "low": 2, "high": 20, "step": 2},
+    "oos_weeks": {"type": "int", "low": 10, "high": 30, "step": 5},
+    "min_is_weeks": {"type": "int", "low": 10, "high": 40, "step": 5},
 }

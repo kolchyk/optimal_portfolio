@@ -14,9 +14,10 @@ def main(argv: list[str] | None = None) -> None:
 
     from src.portfolio_sim.commands import walk_forward
     from src.portfolio_sim.strategy_v2 import command as walk_forward_v2
+    from src.portfolio_sim.strategy_s2 import command as walk_forward_s2
 
     commands: dict[str, object] = {}
-    for mod in [walk_forward, walk_forward_v2]:
+    for mod in [walk_forward, walk_forward_v2, walk_forward_s2]:
         mod.register(subparsers)
         commands[mod.COMMAND_NAME] = mod.run
 

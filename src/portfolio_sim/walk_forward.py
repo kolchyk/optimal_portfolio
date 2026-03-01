@@ -27,6 +27,7 @@ from src.portfolio_sim.config import (
     R2_SEARCH_SPACE,
     SCHEDULE_SEARCH_SPACE,
     SPY_TICKER,
+    compute_max_warmup_from_space,
 )
 from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.engine import run_backtest
@@ -46,14 +47,19 @@ from src.portfolio_sim.reporting import compute_metrics, save_equity_png
 # ---------------------------------------------------------------------------
 def generate_wfo_schedule(
     dates: pd.DatetimeIndex,
-    min_is_days: int = 126,
-    oos_days: int = 21,
+    min_is_days: int = 90,
+    oos_days: int = 90,
 ) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
     """Generate (is_start, is_end, oos_start, oos_end) tuples.
 
     Sliding WFO: IS window is always *min_is_days* wide and advances by
     *oos_days* each step.
     """
+    if oos_days > min_is_days:
+        raise ValueError(
+            f"OOS period ({oos_days}d) must be ≤ IS period ({min_is_days}d)"
+        )
+
     total = len(dates)
     schedule: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]] = []
     is_end_idx = min_is_days - 1
@@ -132,8 +138,8 @@ def run_r2_walk_forward(
     space: dict[str, dict] | None = None,
     n_trials_per_step: int = 50,
     n_workers: int | None = None,
-    min_is_days: int = 126,
-    oos_days: int = 21,
+    min_is_days: int = 90,
+    oos_days: int = 90,
     metric: str = "total_return",
     verbose: bool = True,
 ) -> R2WFOResult:
@@ -166,6 +172,7 @@ def run_r2_walk_forward(
     )
 
     base_params = R2StrategyParams()
+    max_warmup = compute_max_warmup_from_space(space)
     steps: list[R2WFOStep] = []
 
     try:
@@ -181,11 +188,16 @@ def run_r2_walk_forward(
                 sampler=optuna.samplers.TPESampler(seed=42 + step_idx),
             )
 
-            close_is = close_prices.loc[is_start:is_end]
+            # Extend data backward so indicators can warm up before IS start
+            is_start_loc = dates.get_loc(is_start)
+            data_start_idx = max(0, is_start_loc - max_warmup)
+            data_start = dates[data_start_idx]
 
             slice_spec = {
-                "sim_start": is_start,
+                "sim_start": data_start,
                 "sim_end": is_end,
+                "eval_start": is_start,
+                "eval_end": is_end,
                 "tickers": tickers,
             }
 
@@ -210,8 +222,15 @@ def run_r2_walk_forward(
             spy_kama_cache = kama_caches.get(best_params.kama_spy_period, {})
             spy_kama = spy_kama_cache.get(SPY_TICKER)
 
-            is_equity, _, _, _, _ = run_backtest(
-                close_is, open_prices.loc[is_start:is_end], tickers,
+            # IS backtest with warmup extension (same pattern as OOS below)
+            warmup = best_params.warmup
+            is_warmup_idx = max(0, is_start_loc - warmup)
+            is_end_loc = dates.get_loc(is_end)
+            close_is_warm = close_prices.iloc[is_warmup_idx:is_end_loc + 1]
+            open_is_warm = open_prices.iloc[is_warmup_idx:is_end_loc + 1]
+
+            is_equity_full, _, _, _, _ = run_backtest(
+                close_is_warm, open_is_warm, tickers,
                 initial_capital=initial_capital,
                 top_n=best_params.top_n,
                 rebal_period_weeks=best_params.rebal_period_weeks,
@@ -225,6 +244,7 @@ def run_r2_walk_forward(
                 kama_cache_ext=asset_kama,
                 spy_kama_ext=spy_kama,
             )
+            is_equity = is_equity_full.loc[is_start:is_end]
             is_metrics = compute_metrics(is_equity) if not is_equity.empty else {}
 
             warmup = best_params.warmup
@@ -446,6 +466,10 @@ def run_r2_schedule_optimization(
 
         oos_days = oos_weeks * 5
         min_is_days = min_is_weeks * 5
+
+        if oos_weeks > min_is_weeks:
+            outer_study.tell(trial, -999.0)
+            continue
 
         print(f"\n  Schedule trial {trial_idx + 1}/{n_schedule_trials}: "
               f"oos_weeks={oos_weeks} ({oos_days}d), "

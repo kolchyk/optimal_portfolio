@@ -84,6 +84,12 @@ def evaluate_r2_combo(args: tuple) -> dict:
             spy_kama_ext=spy_kama,
         )
 
+        # Slice equity to the actual IS evaluation window
+        eval_start = slice_spec.get("eval_start") if slice_spec else None
+        eval_end = slice_spec.get("eval_end") if slice_spec else None
+        if eval_start or eval_end:
+            equity = equity.loc[eval_start:eval_end]
+
         if equity.empty:
             obj = -999.0
             metrics = {}

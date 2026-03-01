@@ -9,7 +9,7 @@ from src.portfolio_sim.cli_utils import (
     filter_valid_tickers,
     setup_logging,
 )
-from src.portfolio_sim.config import INITIAL_CAPITAL
+from src.portfolio_sim.config import INITIAL_CAPITAL, WFO_MIN_IS_DAYS, WFO_OOS_DAYS
 from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.reporting import save_equity_png
 
@@ -37,12 +37,12 @@ def register(subparsers) -> None:
         help="Number of Optuna trials per WFO step (default: 50)",
     )
     p.add_argument(
-        "--oos-days", type=int, default=21,
-        help="OOS window size in trading days (default: 21 \u2248 1 month)",
+        "--oos-days", type=int, default=WFO_OOS_DAYS,
+        help=f"OOS window size in trading days (default: {WFO_OOS_DAYS})",
     )
     p.add_argument(
-        "--min-is-days", type=int, default=126,
-        help="IS window size in trading days (default: 126 \u2248 6 months)",
+        "--min-is-days", type=int, default=WFO_MIN_IS_DAYS,
+        help=f"IS window size in trading days (default: {WFO_MIN_IS_DAYS})",
     )
     p.add_argument(
         "--oos-weeks", type=int, default=None,
@@ -104,6 +104,10 @@ def run(args) -> None:
     # Resolve weeks → days (weeks override days)
     oos_days = args.oos_weeks * 5 if args.oos_weeks is not None else args.oos_days
     min_is_days = args.min_is_weeks * 5 if args.min_is_weeks is not None else args.min_is_days
+
+    if not args.optimize_schedule and oos_days > min_is_days:
+        print(f"\nERROR: OOS period ({oos_days}d) must be ≤ IS period ({min_is_days}d)")
+        sys.exit(1)
 
     if args.optimize_schedule:
         print(f"\nStarting schedule optimization...")

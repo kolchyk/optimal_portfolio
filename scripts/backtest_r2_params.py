@@ -3,8 +3,8 @@
 Запуск бэктеста с рекомендованными параметрами из WFO (walk-forward optimization).
 
 Параметры:
-  r2_lookback=80, kama_asset=20, kama_spy=30, kama_buffer=0.03,
-  gap=0.175, atr=30, top_n=5, rebal=4w
+  r2_lookback=60, kama_asset=10, kama_spy=40, kama_buffer=0.005,
+  gap=0.175, atr=20, top_n=5, rebal=3w
 
 Usage:
     uv run python scripts/backtest_r2_params.py
@@ -22,15 +22,15 @@ from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.reporting import compute_metrics, format_comparison_table, save_equity_png
 
 
-# Рекомендованные параметры из WFO (output от 2026-02-28)
-R2_LOOKBACK = 80
-KAMA_ASSET_PERIOD = 20
-KAMA_SPY_PERIOD = 30
-KAMA_BUFFER = 0.03
+# Рекомендованные параметры из WFO (output от 2026-03-01, schedule 18w/18w)
+R2_LOOKBACK = 60
+KAMA_ASSET_PERIOD = 10
+KAMA_SPY_PERIOD = 40
+KAMA_BUFFER = 0.005
 GAP_THRESHOLD = 0.175
-ATR_PERIOD = 30
+ATR_PERIOD = 20
 TOP_N = 5
-REBAL_PERIOD_WEEKS = 4
+REBAL_PERIOD_WEEKS = 3
 RISK_FACTOR = 0.001
 
 

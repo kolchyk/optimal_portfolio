@@ -1,4 +1,4 @@
-"""CLI command for V2 walk-forward optimization (vol-targeted)."""
+"""CLI command for S2 walk-forward optimization (hybrid R² Momentum + vol-targeting)."""
 
 import sys
 
@@ -12,19 +12,20 @@ from src.portfolio_sim.cli_utils import (
 from src.portfolio_sim.config import INITIAL_CAPITAL
 from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.reporting import save_equity_png
-from src.portfolio_sim.strategy_v2.params import StrategyParamsV2
-from src.portfolio_sim.strategy_v2.walk_forward import (
-    format_wfo_report_v2,
-    run_v2_schedule_optimization,
-    run_walk_forward_v2,
+from src.portfolio_sim.strategy_s2.params import S2StrategyParams
+from src.portfolio_sim.strategy_s2.walk_forward import (
+    format_wfo_report_s2,
+    run_s2_schedule_optimization,
+    run_walk_forward_s2,
 )
 
-COMMAND_NAME = "walk-forward-v2"
+COMMAND_NAME = "walk-forward-s2"
 
 
 def register(subparsers) -> None:
     p = subparsers.add_parser(
-        COMMAND_NAME, help="Walk-forward optimization (V2: vol-targeted, Sharpe objective)",
+        COMMAND_NAME,
+        help="Walk-forward optimization (S2: hybrid R\u00b2 Momentum + vol-targeting)",
     )
     p.add_argument(
         "--refresh", action="store_true",
@@ -60,11 +61,11 @@ def register(subparsers) -> None:
     )
     p.add_argument(
         "--oos-weeks", type=int, default=None,
-        help="OOS window in weeks (overrides --oos-days; converted to days \u00d7 5)",
+        help="OOS window in weeks (overrides --oos-days; converted to days x 5)",
     )
     p.add_argument(
         "--min-is-weeks", type=int, default=None,
-        help="IS window in weeks (overrides --min-is-days; converted to days \u00d7 5)",
+        help="IS window in weeks (overrides --min-is-days; converted to days x 5)",
     )
     p.add_argument(
         "--metric", default="total_return",
@@ -73,7 +74,7 @@ def register(subparsers) -> None:
     )
     p.add_argument(
         "--optimize-schedule", action="store_true",
-        help="Optimize WFO schedule params (oos_weeks, min_is_weeks) via outer Optuna loop",
+        help="Optimize WFO schedule params via outer Optuna loop",
     )
     p.add_argument(
         "--n-schedule-trials", type=int, default=20,
@@ -83,9 +84,9 @@ def register(subparsers) -> None:
 
 def run(args) -> None:
     setup_logging()
-    output_dir = create_output_dir("wfo_v2")
+    output_dir = create_output_dir("wfo_s2")
 
-    print("\n[V2] Vol-Targeted KAMA Momentum Strategy")
+    print("\n[S2] Hybrid R\u00b2 Momentum + Vol-Targeting Strategy")
     print("=" * 50)
     print("Using cross-asset ETF universe...")
     tickers = fetch_etf_tickers()
@@ -93,16 +94,14 @@ def run(args) -> None:
 
     # Build base params with CLI overrides
     param_overrides = {}
-    if args.oos_days is not None:
-        param_overrides["oos_days"] = args.oos_days
     if args.target_vol is not None:
         param_overrides["target_vol"] = args.target_vol
     if args.max_leverage is not None:
         param_overrides["max_leverage"] = args.max_leverage
 
-    base_params = StrategyParamsV2(**param_overrides)
+    base_params = S2StrategyParams(**param_overrides)
 
-    # Resolve weeks → days (weeks override days)
+    # Resolve weeks -> days
     if args.oos_weeks is not None:
         oos_days = args.oos_weeks * 5
     else:
@@ -112,7 +111,7 @@ def run(args) -> None:
     else:
         min_is_days = args.min_is_days
 
-    min_days = base_params.lookback_period
+    min_days = base_params.r2_lookback
     print(f"Downloading price data ({args.period})...")
     close_prices, open_prices = fetch_price_data(
         tickers, period=args.period, refresh=args.refresh,
@@ -124,15 +123,15 @@ def run(args) -> None:
 
     if not valid_tickers:
         print(f"\nERROR: No tickers with {min_days}+ trading days.")
-        print("Try: python -m src.portfolio_sim walk-forward-v2 --refresh")
+        print("Try: python -m src.portfolio_sim walk-forward-s2 --refresh")
         sys.exit(1)
 
     if not args.optimize_schedule and oos_days is not None and min_is_days is not None and oos_days > min_is_days:
-        print(f"\nERROR: OOS period ({oos_days}d) must be ≤ IS period ({min_is_days}d)")
+        print(f"\nERROR: OOS period ({oos_days}d) must be <= IS period ({min_is_days}d)")
         sys.exit(1)
 
     if args.optimize_schedule:
-        print(f"\nStarting V2 schedule optimization...")
+        print(f"\nStarting S2 schedule optimization...")
         print(f"  Schedule trials: {args.n_schedule_trials}")
         print(f"  Inner trials per step: {args.n_trials}")
         print(f"  Target vol:   {base_params.target_vol:.0%}")
@@ -140,7 +139,7 @@ def run(args) -> None:
         print(f"  Metric: {args.metric}")
         print()
 
-        result = run_v2_schedule_optimization(
+        result = run_s2_schedule_optimization(
             close_prices,
             open_prices,
             valid_tickers,
@@ -154,7 +153,7 @@ def run(args) -> None:
     else:
         display_is = min_is_days or 126
         display_oos = oos_days or 21
-        print(f"\nStarting V2 walk-forward optimization...")
+        print(f"\nStarting S2 walk-forward optimization...")
         print(f"  IS window:    {display_is} days (~{display_is / 21:.0f} months)")
         print(f"  OOS window:   {display_oos} days (~{display_oos / 21:.0f} weeks)")
         print(f"  Trials/step:  {args.n_trials}")
@@ -163,7 +162,7 @@ def run(args) -> None:
         print(f"  Metric: {args.metric}")
         print()
 
-        result = run_walk_forward_v2(
+        result = run_walk_forward_s2(
             close_prices,
             open_prices,
             valid_tickers,
@@ -176,18 +175,18 @@ def run(args) -> None:
             metric=args.metric,
         )
 
-    report = format_wfo_report_v2(result)
+    report = format_wfo_report_s2(result)
     print(f"\n{report}")
 
-    report_path = output_dir / "wfo_v2_report.txt"
+    report_path = output_dir / "wfo_s2_report.txt"
     report_path.write_text(report)
     print(f"\nReport saved to {report_path}")
 
-    _save_wfo_v2_artifacts(result, output_dir)
+    _save_wfo_s2_artifacts(result, output_dir)
 
 
-def _save_wfo_v2_artifacts(result, output_dir) -> None:
-    """Save equity CSV, PNG, and step details for a V2 WFO result."""
+def _save_wfo_s2_artifacts(result, output_dir) -> None:
+    """Save equity CSV, PNG, and step details for an S2 WFO result."""
     equity_path = output_dir / "stitched_oos_equity.csv"
     result.stitched_equity.to_csv(equity_path, header=True)
     print(f"Stitched OOS equity saved to {equity_path}")
@@ -196,7 +195,7 @@ def _save_wfo_v2_artifacts(result, output_dir) -> None:
         result.stitched_equity,
         result.stitched_spy_equity,
         output_dir,
-        title="V2 Vol-Targeted WFO: OOS Equity (Stitched)",
+        title="S2 Hybrid WFO: OOS Equity (Stitched)",
         filename="stitched_oos_equity.png",
     )
 
@@ -209,13 +208,15 @@ def _save_wfo_v2_artifacts(result, output_dir) -> None:
             "is_end": step.is_end.date(),
             "oos_start": step.oos_start.date(),
             "oos_end": step.oos_end.date(),
-            "kama_period": p.kama_period,
-            "lookback_period": p.lookback_period,
+            "r2_lookback": p.r2_lookback,
+            "kama_asset_period": p.kama_asset_period,
+            "kama_spy_period": p.kama_spy_period,
             "kama_buffer": p.kama_buffer,
+            "atr_period": p.atr_period,
             "top_n": p.top_n,
-            "oos_days": p.oos_days,
+            "rebal_period_weeks": p.rebal_period_weeks,
+            "gap_threshold": p.gap_threshold,
             "corr_threshold": p.corr_threshold,
-            "weighting_mode": p.weighting_mode,
             "target_vol": p.target_vol,
             "max_leverage": p.max_leverage,
             "portfolio_vol_lookback": p.portfolio_vol_lookback,
@@ -229,14 +230,16 @@ def _save_wfo_v2_artifacts(result, output_dir) -> None:
         step_rows.append(row)
 
     steps_df = pd.DataFrame(step_rows)
-    steps_path = output_dir / "wfo_v2_steps.csv"
+    steps_path = output_dir / "wfo_s2_steps.csv"
     steps_df.to_csv(steps_path, index=False)
     print(f"Step details saved to {steps_path}")
 
     fp = result.final_params
-    print(f"\nRecommended live parameters (V2):")
-    print(f"  kama_period={fp.kama_period}, lookback_period={fp.lookback_period}, "
-          f"kama_buffer={fp.kama_buffer}, top_n={fp.top_n}")
+    print(f"\nRecommended live parameters (S2):")
+    print(f"  r2_lookback={fp.r2_lookback}, kama_asset={fp.kama_asset_period}, "
+          f"kama_spy={fp.kama_spy_period}, kama_buffer={fp.kama_buffer}")
+    print(f"  atr_period={fp.atr_period}, top_n={fp.top_n}, "
+          f"rebal={fp.rebal_period_weeks}w, gap={fp.gap_threshold}")
     print(f"  target_vol={fp.target_vol}, max_leverage={fp.max_leverage}, "
           f"portfolio_vol_lookback={fp.portfolio_vol_lookback}")
-    print(f"  corr_threshold={fp.corr_threshold}, weighting_mode={fp.weighting_mode}")
+    print(f"  corr_threshold={fp.corr_threshold}")
