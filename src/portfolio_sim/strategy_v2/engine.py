@@ -17,11 +17,17 @@ from tqdm import tqdm
 
 from src.portfolio_sim.alpha import get_buy_candidates
 from src.portfolio_sim.config import (
+    ASSET_CLASS_MAP,
     COMMISSION_RATE,
     RISK_FREE_RATE,
     SLIPPAGE_RATE,
     SPY_TICKER,
 )
+
+# Asset classes treated as safe havens during risk-off (kept/buyable when SPY < KAMA)
+_SAFE_HAVEN_CLASSES = frozenset({
+    "Long Bonds", "Mid Bonds", "Short Bonds", "Corporate Bonds", "Metals",
+})
 from src.portfolio_sim.indicators import compute_kama_series
 from src.portfolio_sim.models import SimulationResult
 from src.portfolio_sim.strategy_v2.params import StrategyParamsV2
@@ -58,6 +64,12 @@ def run_simulation_v2(
                 kama_cache[t] = compute_kama_series(
                     close_prices[t].dropna(), period=p.kama_period
                 )
+
+    # ------------------------------------------------------------------
+    # 0a. Pre-compute SPY KAMA for regime filter
+    # ------------------------------------------------------------------
+    spy_prices_full = close_prices[SPY_TICKER].dropna()
+    spy_kama_series = compute_kama_series(spy_prices_full, period=p.kama_spy_period)
 
     # ------------------------------------------------------------------
     # 0b. Pre-compute vectorised alpha & volatility matrices
@@ -257,6 +269,16 @@ def run_simulation_v2(
         # else: keep current_scale = 1.0 during warmup
 
         # --- Compute signals on Close(T) for Open(T+1) ---
+
+        # SPY KAMA regime filter
+        spy_kama_val = spy_kama_series.get(date, np.nan)
+        spy_close_val = daily_close.get(SPY_TICKER, np.nan)
+        risk_off = (
+            not np.isnan(spy_kama_val)
+            and not np.isnan(spy_close_val)
+            and spy_close_val < spy_kama_val * (1 - p.kama_buffer)
+        )
+
         sells: dict[str, float] = {}
         kama_row = (
             kama_df.loc[date]
@@ -264,25 +286,48 @@ def run_simulation_v2(
             else pd.Series(dtype=float)
         )
 
-        for t in list(shares.keys()):
-            t_kama = kama_row.get(t, np.nan)
-            if not np.isnan(t_kama):
-                if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
+        if risk_off:
+            # Smart risk-off: sell risky assets, keep safe havens
+            for t in list(shares.keys()):
+                if ASSET_CLASS_MAP.get(t, "US Equity") not in _SAFE_HAVEN_CLASSES:
                     sells[t] = 0.0
 
-        kama_current = kama_row.dropna().to_dict() if len(kama_row) > 0 else {}
-        prices_row = _prices.loc[[date]]
+            kama_current = kama_row.dropna().to_dict() if len(kama_row) > 0 else {}
+            prices_row = _prices.loc[[date]]
+            all_candidates = get_buy_candidates(
+                prices_row, tickers, kama_current,
+                kama_buffer=p.kama_buffer, top_n=p.top_n,
+                use_risk_adjusted=p.use_risk_adjusted,
+                precomputed_momentum=momentum_df.loc[date],
+                precomputed_er=er_df.loc[date],
+            )
+            candidates = [
+                c for c in all_candidates
+                if ASSET_CLASS_MAP.get(c, "US Equity") in _SAFE_HAVEN_CLASSES
+            ]
+        else:
+            kama_current = kama_row.dropna().to_dict() if len(kama_row) > 0 else {}
+            prices_row = _prices.loc[[date]]
 
-        candidates = get_buy_candidates(
-            prices_row,
-            tickers,
-            kama_current,
-            kama_buffer=p.kama_buffer,
-            top_n=p.top_n,
-            use_risk_adjusted=p.use_risk_adjusted,
-            precomputed_momentum=momentum_df.loc[date],
-            precomputed_er=er_df.loc[date],
-        )
+            # Extended candidate list for rotation stop (top_n * 2)
+            extended_candidates = get_buy_candidates(
+                prices_row, tickers, kama_current,
+                kama_buffer=p.kama_buffer, top_n=p.top_n * 2,
+                use_risk_adjusted=p.use_risk_adjusted,
+                precomputed_momentum=momentum_df.loc[date],
+                precomputed_er=er_df.loc[date],
+            )
+            candidates = extended_candidates[:p.top_n]
+
+            for t in list(shares.keys()):
+                t_kama = kama_row.get(t, np.nan)
+                if not np.isnan(t_kama):
+                    # Exit 1: KAMA trend break
+                    if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
+                        sells[t] = 0.0
+                    # Exit 2: rotation stop — asset fell out of extended ranking
+                    elif t not in extended_candidates:
+                        sells[t] = 0.0
 
         # --- Correlation filter ---
         if p.corr_threshold < 1.0 and shares:
@@ -380,11 +425,18 @@ def _inv_vols_to_weights(
     return {t: v / total for t, v in inv_vols.items()}
 
 
+_VOL_FLOOR = 0.06 / (252 ** 0.5)  # ~6% annualized floor for daily vol
+
+
 def _compute_inverse_vol_weights_fast(
     tickers_to_buy: list[str],
     vol_row: pd.Series,
 ) -> dict[str, float]:
-    """Compute inverse-volatility weights from a pre-computed volatility row."""
+    """Compute inverse-volatility weights from a pre-computed volatility row.
+
+    A volatility floor prevents ultra-low-vol assets (e.g. SGOV, SHV)
+    from dominating the portfolio.
+    """
     if not tickers_to_buy:
         return {}
 
@@ -393,10 +445,8 @@ def _compute_inverse_vol_weights_fast(
         vol = vol_row.get(t, np.nan)
         if np.isnan(vol):
             continue
-        if vol > 1e-8:
-            inv_vols[t] = 1.0 / vol
-        else:
-            inv_vols[t] = 1.0
+        vol = max(vol, _VOL_FLOOR)
+        inv_vols[t] = 1.0 / vol
 
     return _inv_vols_to_weights(inv_vols, tickers_to_buy)
 

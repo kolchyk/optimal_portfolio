@@ -2,11 +2,13 @@
 
 Signals computed on Close(T), execution on Open(T+1).
 
-Key design decisions that prevent capital destruction:
-  - Lazy hold: positions are sold ONLY when their own KAMA stop-loss triggers,
-    never because they dropped in the momentum ranking.
-  - Position sizing: inverse-volatility (risk parity) — low-vol assets get
-    larger allocations so each position contributes roughly equal dollar risk.
+Key design decisions:
+  - Smart risk-off: when SPY < KAMA, sell only risky assets (equity, crypto)
+    while keeping/buying safe havens (bonds, metals) for crisis alpha.
+  - Rotation stop: positions are sold on KAMA breach OR when they fall
+    outside the extended momentum ranking (top_n * 2).
+  - Position sizing: inverse-volatility (risk parity) with a vol floor
+    to prevent ultra-low-vol assets from dominating allocations.
 """
 
 from __future__ import annotations
@@ -17,11 +19,17 @@ from tqdm import tqdm
 
 from src.portfolio_sim.alpha import get_buy_candidates
 from src.portfolio_sim.config import (
+    ASSET_CLASS_MAP,
     COMMISSION_RATE,
     RISK_FREE_RATE,
     SLIPPAGE_RATE,
     SPY_TICKER,
 )
+
+# Asset classes treated as safe havens during risk-off (kept/buyable when SPY < KAMA)
+_SAFE_HAVEN_CLASSES = frozenset({
+    "Long Bonds", "Mid Bonds", "Short Bonds", "Corporate Bonds", "Metals",
+})
 from src.portfolio_sim.indicators import compute_kama_series
 from src.portfolio_sim.models import SimulationResult
 from src.portfolio_sim.params import StrategyParams
@@ -203,33 +211,49 @@ def run_simulation(
         kama_row = kama_df.loc[date] if (not kama_df.empty and date in kama_df.index) else pd.Series(dtype=float)
 
         if risk_off:
-            # Risk-off: liquidate all positions, no new buys
+            # Smart risk-off: sell risky assets, keep safe havens
             for t in list(shares.keys()):
-                sells[t] = 0.0
-            candidates: list[str] = []
-        else:
-            # Sell ONLY on individual KAMA stop-loss.
-            # A stock dropping from rank 20 to rank 50 is irrelevant
-            # as long as its own trend (Close > KAMA) holds.
-            for t in list(shares.keys()):
-                t_kama = kama_row.get(t, np.nan)
-                if not np.isnan(t_kama):
-                    if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
-                        sells[t] = 0.0
+                if ASSET_CLASS_MAP.get(t, "US Equity") not in _SAFE_HAVEN_CLASSES:
+                    sells[t] = 0.0
 
-            # Get fresh candidates from alpha (using pre-computed matrices)
+            # Buy candidates only from safe-haven classes
             kama_current = kama_row.dropna().to_dict() if len(kama_row) > 0 else {}
-
-            # Single-row DataFrame for the KAMA filter (Close > KAMA check)
             prices_row = _prices.loc[[date]]
-
-            candidates = get_buy_candidates(
+            all_candidates = get_buy_candidates(
                 prices_row, tickers, kama_current,
                 kama_buffer=p.kama_buffer, top_n=p.top_n,
                 use_risk_adjusted=p.use_risk_adjusted,
                 precomputed_momentum=momentum_df.loc[date],
                 precomputed_er=er_df.loc[date],
             )
+            candidates = [
+                c for c in all_candidates
+                if ASSET_CLASS_MAP.get(c, "US Equity") in _SAFE_HAVEN_CLASSES
+            ]
+        else:
+            # Get fresh candidates from alpha (using pre-computed matrices)
+            kama_current = kama_row.dropna().to_dict() if len(kama_row) > 0 else {}
+            prices_row = _prices.loc[[date]]
+
+            # Extended candidate list for rotation stop (top_n * 2)
+            extended_candidates = get_buy_candidates(
+                prices_row, tickers, kama_current,
+                kama_buffer=p.kama_buffer, top_n=p.top_n * 2,
+                use_risk_adjusted=p.use_risk_adjusted,
+                precomputed_momentum=momentum_df.loc[date],
+                precomputed_er=er_df.loc[date],
+            )
+            candidates = extended_candidates[:p.top_n]
+
+            for t in list(shares.keys()):
+                t_kama = kama_row.get(t, np.nan)
+                if not np.isnan(t_kama):
+                    # Exit 1: KAMA trend break
+                    if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
+                        sells[t] = 0.0
+                    # Exit 2: rotation stop — asset fell out of extended ranking
+                    elif t not in extended_candidates:
+                        sells[t] = 0.0
 
         # --- Correlation filter: skip candidates too correlated with holdings ---
         if p.corr_threshold < 1.0 and shares:
@@ -332,6 +356,9 @@ def _inv_vols_to_weights(
     return {t: v / total for t, v in inv_vols.items()}
 
 
+_VOL_FLOOR = 0.06 / (252 ** 0.5)  # ~6% annualized floor for daily vol
+
+
 def _compute_inverse_vol_weights_fast(
     tickers_to_buy: list[str],
     vol_row: pd.Series,
@@ -340,6 +367,8 @@ def _compute_inverse_vol_weights_fast(
 
     Each ticker's weight is proportional to 1/volatility, so low-vol assets
     get larger allocations and high-vol assets get smaller allocations.
+    A volatility floor prevents ultra-low-vol assets (e.g. SGOV, SHV)
+    from dominating the portfolio.
     """
     if not tickers_to_buy:
         return {}
@@ -349,10 +378,8 @@ def _compute_inverse_vol_weights_fast(
         vol = vol_row.get(t, np.nan)
         if np.isnan(vol):
             continue
-        if vol > 1e-8:
-            inv_vols[t] = 1.0 / vol
-        else:
-            inv_vols[t] = 1.0  # near-zero vol: treat as equal weight
+        vol = max(vol, _VOL_FLOOR)
+        inv_vols[t] = 1.0 / vol
 
     return _inv_vols_to_weights(inv_vols, tickers_to_buy)
 

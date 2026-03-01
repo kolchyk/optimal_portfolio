@@ -80,14 +80,14 @@ _METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]
 
 
 # ---------------------------------------------------------------------------
-# Objective: maximize CAGR
+# Objective: maximize Calmar ratio (CAGR / MaxDD)
 # ---------------------------------------------------------------------------
 def r2_objective(
     equity: pd.Series,
     max_dd_limit: float = 0.30,
     min_n_days: int = 20,
 ) -> float:
-    """CAGR-maximizing objective with MaxDD guard."""
+    """Calmar-ratio objective — penalizes drawdown for more robust OOS params."""
     metrics = compute_metrics(equity)
     if metrics["n_days"] < min_n_days:
         return -999.0
@@ -96,7 +96,8 @@ def r2_objective(
     cagr = metrics["cagr"]
     if cagr <= 0:
         return -999.0
-    return cagr
+    calmar = cagr / max(metrics["max_drawdown"], 0.01)
+    return calmar
 
 
 # ---------------------------------------------------------------------------

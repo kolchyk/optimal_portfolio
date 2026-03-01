@@ -22,6 +22,7 @@ import numpy as np
 import pandas as pd
 
 from src.portfolio_sim.config import (
+    ASSET_CLASS_MAP,
     COMMISSION_RATE,
     INITIAL_CAPITAL,
     KAMA_BUFFER,
@@ -32,6 +33,11 @@ from src.portfolio_sim.config import (
     SPY_TICKER,
     TOP_N,
 )
+
+# Asset classes treated as safe havens during risk-off
+_SAFE_HAVEN_CLASSES = frozenset({
+    "Long Bonds", "Mid Bonds", "Short Bonds", "Corporate Bonds", "Metals",
+})
 from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data
 from src.portfolio_sim.indicators import compute_kama_series
 from src.portfolio_sim.reporting import compute_drawdown_series, compute_metrics
@@ -190,6 +196,9 @@ def compute_r2_momentum(
 # ---------------------------------------------------------------------------
 # Asset selection with Clenow filters + ATR risk parity
 # ---------------------------------------------------------------------------
+CORR_THRESHOLD_R2 = 0.7  # default correlation threshold for R2 engine
+
+
 def select_r2_assets(
     close_prices: pd.DataFrame,
     date: pd.Timestamp,
@@ -202,6 +211,7 @@ def select_r2_assets(
     gap_threshold: float = GAP_THRESHOLD,
     atr_period: int = ATR_PERIOD,
     risk_factor: float = RISK_FACTOR,
+    corr_threshold: float = CORR_THRESHOLD_R2,
 ) -> tuple[dict[str, float], dict[str, float]]:
     """Select top-N assets by Clenow R² Momentum, weight by ATR risk parity.
 
@@ -216,15 +226,21 @@ def select_r2_assets(
       2. Asset > KAMA (individual trend)
       3. No gap > 15% in last 90 days
       4. R² Momentum score > 0
+      5. Greedy correlation filter (skip assets correlated >threshold with selected)
     Sizing: ATR-based risk parity (normalized to sum=1.0, no leverage)
     """
-    if not is_risk_on(spy_kama, close_prices[SPY_TICKER], date, kama_buffer):
-        return {}, {}
+    risk_on = is_risk_on(spy_kama, close_prices[SPY_TICKER], date, kama_buffer)
 
     prices_up_to = close_prices.loc[:date]
     scores: dict[str, float] = {}
 
-    for t in eligible_tickers:
+    # During risk-off, only consider safe-haven assets
+    scan_tickers = eligible_tickers if risk_on else [
+        t for t in eligible_tickers
+        if ASSET_CLASS_MAP.get(t, "US Equity") in _SAFE_HAVEN_CLASSES
+    ]
+
+    for t in scan_tickers:
         if t not in prices_up_to.columns:
             continue
         ser = prices_up_to[t].dropna()
@@ -246,8 +262,32 @@ def select_r2_assets(
     if not scores:
         return {}, scores
 
-    # Rank and take top_n
-    ranked = sorted(scores, key=scores.get, reverse=True)[:top_n]
+    # Rank all candidates by score
+    all_ranked = sorted(scores, key=scores.get, reverse=True)
+
+    # Greedy correlation filter: skip candidates too correlated with selected
+    if corr_threshold < 1.0 and len(all_ranked) > 1:
+        returns_window = prices_up_to.pct_change().iloc[-r2_lookback:]
+        ranked: list[str] = []
+        for t in all_ranked:
+            if not ranked:
+                ranked.append(t)
+            else:
+                valid_cols = [c for c in ranked + [t] if c in returns_window.columns]
+                if len(valid_cols) >= 2 and t in returns_window.columns:
+                    corr_row = returns_window[valid_cols].corr(min_periods=5)
+                    if t in corr_row.columns:
+                        max_corr = corr_row[t].drop(t, errors="ignore").max()
+                        if np.isnan(max_corr) or max_corr <= corr_threshold:
+                            ranked.append(t)
+                    else:
+                        ranked.append(t)
+                else:
+                    ranked.append(t)
+            if len(ranked) >= top_n:
+                break
+    else:
+        ranked = all_ranked[:top_n]
 
     # ATR-based risk parity position sizing
     atr_inv: dict[str, float] = {}
@@ -289,6 +329,7 @@ def run_backtest(
     gap_threshold: float = GAP_THRESHOLD,
     atr_period: int = ATR_PERIOD,
     risk_factor: float = RISK_FACTOR,
+    corr_threshold: float = CORR_THRESHOLD_R2,
     kama_cache_ext: dict[str, pd.Series] | None = None,
     spy_kama_ext: pd.Series | None = None,
 ) -> tuple[pd.Series, pd.Series, pd.DataFrame, pd.Series, list[dict]]:
@@ -435,18 +476,25 @@ def run_backtest(
                 gap_threshold=gap_threshold,
                 atr_period=atr_period,
                 risk_factor=risk_factor,
+                corr_threshold=corr_threshold,
             )
 
             # Determine sells: positions that should be exited
             sells_to_do: list[str] = []
             prices_up_to = close_prices.loc[:date]
 
+            # Extended ranking for rotation stop (top_n * 2)
+            extended_top = set(
+                sorted(all_scores, key=all_scores.get, reverse=True)[:top_n * 2]
+            ) if all_scores else set()
+
             for t in list(shares.keys()):
                 should_sell = False
 
-                # Exit 1: SPY regime off (target_weights empty = risk-off)
+                # Exit 1: SPY regime off — sell only risky assets, keep safe havens
                 if not target_weights and not all_scores:
-                    should_sell = True
+                    if ASSET_CLASS_MAP.get(t, "US Equity") not in _SAFE_HAVEN_CLASSES:
+                        should_sell = True
                 # Exit 2: asset dropped below KAMA
                 elif t in close_prices.columns:
                     ser = prices_up_to[t].dropna()
@@ -456,6 +504,9 @@ def run_backtest(
                     # Exit 3: R² Momentum score turned negative or asset
                     # failed hard filters (not in all_scores)
                     elif t not in all_scores:
+                        should_sell = True
+                    # Exit 4: rotation stop — asset fell out of extended ranking
+                    elif t not in extended_top:
                         should_sell = True
 
                 if should_sell:

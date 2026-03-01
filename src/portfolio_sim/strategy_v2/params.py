@@ -15,6 +15,7 @@ class StrategyParamsV2:
 
     # --- Base KAMA momentum params (same fields as StrategyParams) ---
     kama_period: int = 20
+    kama_spy_period: int = 40
     lookback_period: int = 60
     top_n: int = 6
     kama_buffer: float = 0.01
@@ -40,6 +41,7 @@ class StrategyParamsV2:
         return max(
             self.lookback_period,
             self.kama_period,
+            self.kama_spy_period,
             self.volatility_lookback,
             self.portfolio_vol_lookback,
         ) + 10
