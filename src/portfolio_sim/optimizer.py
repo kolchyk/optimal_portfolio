@@ -6,6 +6,7 @@ Shared infrastructure for KAMA pre-computation and strategy optimization.
 from __future__ import annotations
 
 import os
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import partial
@@ -24,6 +25,11 @@ from src.portfolio_sim.config import (
     get_kama_periods,
 )
 from src.portfolio_sim.indicators import compute_kama_series
+from src.portfolio_sim.parallel import (
+    init_eval_worker,
+    run_optuna_batch_loop,
+    select_best_params,
+)
 from src.portfolio_sim.params import StrategyParams
 from src.portfolio_sim.reporting import compute_metrics
 
@@ -196,8 +202,6 @@ def run_sensitivity(
         for name, spec in space.items()
     })
 
-    from src.portfolio_sim.parallel import init_eval_worker, run_optuna_batch_loop
-
     own_executor = executor is None
 
     if own_executor:
@@ -214,7 +218,10 @@ def run_sensitivity(
             "tickers": list(tickers),
         }
 
-    objective_fn = partial(_raw_metric_objective, metric=metric)
+    # Resolve from sys.modules to avoid pickle identity mismatch
+    # after Streamlit hot-reloads the module.
+    _obj_fn = sys.modules[__name__]._raw_metric_objective
+    objective_fn = partial(_obj_fn, metric=metric)
 
     grid_df = run_optuna_batch_loop(
         study, executor,
@@ -260,5 +267,4 @@ def run_sensitivity(
 
 def find_best_params(result: SensitivityResult) -> StrategyParams | None:
     """Extract the best parameter combo from optimisation results."""
-    from src.portfolio_sim.parallel import select_best_params
     return select_best_params(result.grid_results, "objective", PARAM_NAMES)

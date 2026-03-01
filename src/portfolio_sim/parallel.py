@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Callable
 
@@ -123,7 +124,10 @@ def suggest_params(
                 name, spec["low"], spec["high"], step=spec.get("step"),
             )
     kwargs.update(fixed_params)
-    return StrategyParams(**kwargs)
+    # Resolve from sys.modules to avoid pickle identity mismatch
+    # after Streamlit hot-reloads the module.
+    _Params = sys.modules["src.portfolio_sim.params"].StrategyParams
+    return _Params(**kwargs)
 
 
 def run_optuna_batch_loop(
@@ -161,9 +165,12 @@ def run_optuna_batch_loop(
             param_keys, metric_keys,
         )
 
+        # Resolve from sys.modules to avoid pickle identity mismatch
+        # after Streamlit hot-reloads the module.
+        _eval_fn = sys.modules[__name__].evaluate_combo
         futures = {
             executor.submit(
-                evaluate_combo,
+                _eval_fn,
                 combo(p) if slice_spec is None else combo(p) + (slice_spec,),
             ): (t, p)
             for t, p in zip(trials, params_list)
@@ -204,9 +211,13 @@ def select_best_params(
         return None
     best = valid.loc[valid[objective_col].idxmax()]
 
+    # Resolve from sys.modules to avoid pickle identity mismatch
+    # after Streamlit hot-reloads the module.
+    _Params = sys.modules["src.portfolio_sim.params"].StrategyParams
+
     _field_types = {
         f.name: f.type
-        for f in StrategyParams.__dataclass_fields__.values()
+        for f in _Params.__dataclass_fields__.values()
     }
 
     kwargs = {}
@@ -219,4 +230,4 @@ def select_best_params(
             elif expected == "float" or expected is float:
                 val = float(val)
             kwargs[key] = val
-    return StrategyParams(**kwargs)
+    return _Params(**kwargs)

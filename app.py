@@ -1,12 +1,25 @@
 """Multi-page Streamlit app entrypoint.
 
-Run with: streamlit run app.py
+Run with: uv run streamlit run app.py
+Or: uv run python app.py (redirects to streamlit run)
 """
+
+import sys
+
+# Redirect plain "python app.py" to "streamlit run app.py" to avoid bare-mode warnings
+if __name__ == "__main__":
+    from streamlit import runtime
+    from streamlit.web import cli as stcli
+
+    if not runtime.exists():
+        sys.argv = ["streamlit", "run", __file__, *sys.argv[1:]]
+        sys.exit(stcli.main())
 
 import streamlit as st
 
 st.set_page_config(
-    page_title="Portfolio Strategy",
+    page_title="SK Portfolio v 1.0",
+    page_icon=":chart_with_upwards_trend:",
     layout="wide",
 )
 
@@ -22,11 +35,16 @@ def backtest_page():
 
 pg = st.navigation(
     [
-        st.Page(backtest_page, title="Backtest", icon=":material/monitoring:"),
+        st.Page(
+            backtest_page,
+            title="Backtest",
+            icon=":material/monitoring:",
+            default=True,
+        ),
         st.Page(
             strategy_rules_page,
-            title="\u041f\u0440\u0430\u0432\u0438\u043b\u0430 \u0441\u0442\u0440\u0430\u0442\u0435\u0433\u0456\u0457",
-            icon=":material/menu_book:",
+            title="How It Works",
+            icon=":material/school:",
         ),
     ]
 )
