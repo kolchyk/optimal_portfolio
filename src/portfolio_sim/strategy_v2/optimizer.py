@@ -20,9 +20,9 @@ from src.portfolio_sim.optimizer import (
     SensitivityResult,
     _clamp_to_space,
     _get_kama_periods_from_space,
-    make_objective,
     precompute_kama_caches,
 )
+from src.portfolio_sim.reporting import compute_metrics
 from src.portfolio_sim.strategy_v2.config import (
     V2_DEFAULT_N_TRIALS,
     V2_MAX_DD_LIMIT,
@@ -41,15 +41,15 @@ _V2_METRIC_KEYS = ["cagr", "max_drawdown", "sharpe", "calmar"]
 
 
 # ---------------------------------------------------------------------------
-# V2 objective: maximise Sharpe with tighter drawdown cap
+# V2 objective: raw metric value (no constraints)
 # ---------------------------------------------------------------------------
-def compute_objective_v2(
+def _raw_metric_objective(
     equity: pd.Series,
-    max_dd_limit: float = V2_MAX_DD_LIMIT,
-    min_n_days: int = 60,
+    max_dd_limit: float,
+    metric: str = "total_return",
 ) -> float:
-    """Sharpe-based objective with tighter drawdown constraint."""
-    return make_objective("sharpe", max_dd_limit, min_n_days)(equity)
+    """Raw metric objective — returns metric value with no constraints."""
+    return compute_metrics(equity)[metric]
 
 
 # ---------------------------------------------------------------------------
@@ -66,8 +66,10 @@ def run_sensitivity_v2(
     n_workers: int | None = None,
     max_dd_limit: float = V2_MAX_DD_LIMIT,
     min_n_days: int = 60,
+    metric: str = "total_return",
     kama_caches: dict[int, dict[str, pd.Series]] | None = None,
     executor: ProcessPoolExecutor | None = None,
+    verbose: bool = True,
 ) -> SensitivityResult:
     """Run V2 parameter optimisation using Optuna TPE sampler.
 
@@ -125,7 +127,7 @@ def run_sensitivity_v2(
             "tickers": list(tickers),
         }
 
-    objective_fn = partial(compute_objective_v2, min_n_days=min_n_days)
+    objective_fn = partial(_raw_metric_objective, metric=metric)
 
     grid_df = run_optuna_batch_loop_v2(
         study, executor,
@@ -139,6 +141,7 @@ def run_sensitivity_v2(
         metric_keys=_V2_METRIC_KEYS,
         slice_spec=slice_spec,
         desc="V2 sensitivity trials",
+        verbose=verbose,
     )
 
     if own_executor:

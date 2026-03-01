@@ -15,6 +15,7 @@ from src.portfolio_sim.reporting import save_equity_png
 from src.portfolio_sim.strategy_v2.params import StrategyParamsV2
 from src.portfolio_sim.strategy_v2.walk_forward import (
     format_wfo_report_v2,
+    run_v2_schedule_optimization,
     run_walk_forward_v2,
 )
 
@@ -57,6 +58,27 @@ def register(subparsers) -> None:
         "--max-leverage", type=float, default=None,
         help="Max scale factor for vol targeting (default: 1.5)",
     )
+    p.add_argument(
+        "--oos-weeks", type=int, default=None,
+        help="OOS window in weeks (overrides --oos-days; converted to days \u00d7 5)",
+    )
+    p.add_argument(
+        "--min-is-weeks", type=int, default=None,
+        help="IS window in weeks (overrides --min-is-days; converted to days \u00d7 5)",
+    )
+    p.add_argument(
+        "--metric", default="total_return",
+        choices=("total_return", "cagr", "sharpe", "calmar"),
+        help="Optimization metric (default: total_return)",
+    )
+    p.add_argument(
+        "--optimize-schedule", action="store_true",
+        help="Optimize WFO schedule params (oos_weeks, min_is_weeks) via outer Optuna loop",
+    )
+    p.add_argument(
+        "--n-schedule-trials", type=int, default=20,
+        help="Number of outer Optuna trials for schedule optimization (default: 20)",
+    )
 
 
 def run(args) -> None:
@@ -80,8 +102,15 @@ def run(args) -> None:
 
     base_params = StrategyParamsV2(**param_overrides)
 
-    min_is_days = args.min_is_days
-    oos_days = args.oos_days
+    # Resolve weeks → days (weeks override days)
+    if args.oos_weeks is not None:
+        oos_days = args.oos_weeks * 5
+    else:
+        oos_days = args.oos_days
+    if args.min_is_weeks is not None:
+        min_is_days = args.min_is_weeks * 5
+    else:
+        min_is_days = args.min_is_days
 
     min_days = base_params.lookback_period
     print(f"Downloading price data ({args.period})...")
@@ -98,28 +127,50 @@ def run(args) -> None:
         print("Try: python -m src.portfolio_sim walk-forward-v2 --refresh")
         sys.exit(1)
 
-    display_is = min_is_days or 126
-    display_oos = oos_days or 21
-    print(f"\nStarting V2 walk-forward optimization...")
-    print(f"  IS window:    {display_is} days (~{display_is / 21:.0f} months)")
-    print(f"  OOS window:   {display_oos} days (~{display_oos / 21:.0f} weeks)")
-    print(f"  Trials/step:  {args.n_trials}")
-    print(f"  Target vol:   {base_params.target_vol:.0%}")
-    print(f"  Max leverage:  {base_params.max_leverage:.2f}")
-    print(f"  Objective:     Sharpe ratio (max DD <= 20%)")
-    print()
+    if args.optimize_schedule:
+        print(f"\nStarting V2 schedule optimization...")
+        print(f"  Schedule trials: {args.n_schedule_trials}")
+        print(f"  Inner trials per step: {args.n_trials}")
+        print(f"  Target vol:   {base_params.target_vol:.0%}")
+        print(f"  Max leverage:  {base_params.max_leverage:.2f}")
+        print(f"  Metric: {args.metric}")
+        print()
 
-    result = run_walk_forward_v2(
-        close_prices,
-        open_prices,
-        valid_tickers,
-        INITIAL_CAPITAL,
-        base_params=base_params,
-        n_trials_per_step=args.n_trials,
-        n_workers=args.n_workers,
-        min_is_days=min_is_days,
-        oos_days=oos_days,
-    )
+        result = run_v2_schedule_optimization(
+            close_prices,
+            open_prices,
+            valid_tickers,
+            INITIAL_CAPITAL,
+            base_params=base_params,
+            n_trials_per_step=args.n_trials,
+            n_schedule_trials=args.n_schedule_trials,
+            n_workers=args.n_workers,
+            metric=args.metric,
+        )
+    else:
+        display_is = min_is_days or 126
+        display_oos = oos_days or 21
+        print(f"\nStarting V2 walk-forward optimization...")
+        print(f"  IS window:    {display_is} days (~{display_is / 21:.0f} months)")
+        print(f"  OOS window:   {display_oos} days (~{display_oos / 21:.0f} weeks)")
+        print(f"  Trials/step:  {args.n_trials}")
+        print(f"  Target vol:   {base_params.target_vol:.0%}")
+        print(f"  Max leverage:  {base_params.max_leverage:.2f}")
+        print(f"  Metric: {args.metric}")
+        print()
+
+        result = run_walk_forward_v2(
+            close_prices,
+            open_prices,
+            valid_tickers,
+            INITIAL_CAPITAL,
+            base_params=base_params,
+            n_trials_per_step=args.n_trials,
+            n_workers=args.n_workers,
+            min_is_days=min_is_days,
+            oos_days=oos_days,
+            metric=args.metric,
+        )
 
     report = format_wfo_report_v2(result)
     print(f"\n{report}")

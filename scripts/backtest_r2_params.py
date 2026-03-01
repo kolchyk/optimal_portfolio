@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import argparse
 
-from scripts.compare_methods import run_backtest
+from src.portfolio_sim.engine import run_backtest
 from src.portfolio_sim.cli_utils import create_output_dir, filter_valid_tickers, setup_logging
 from src.portfolio_sim.config import INITIAL_CAPITAL, SPY_TICKER
 from src.portfolio_sim.data import fetch_etf_tickers, fetch_price_data

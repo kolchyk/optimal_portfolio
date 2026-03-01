@@ -13,7 +13,7 @@ import scipy.optimize as sco
 import streamlit as st
 import structlog
 
-from scripts.compare_methods import run_backtest
+from src.portfolio_sim.engine import run_backtest
 from src.portfolio_sim.cli_utils import filter_valid_tickers
 from src.portfolio_sim.config import (
     ATR_PERIOD,
@@ -978,7 +978,7 @@ def main():
         opt_mode = sidebar["optimize_mode"]
 
         if opt_mode == "Walk-Forward":
-            from scripts.wfo_r2_momentum import run_r2_walk_forward
+            from src.portfolio_sim.walk_forward import run_r2_walk_forward
 
             n_trials = sidebar["opt_n_trials"]
             with st.spinner(

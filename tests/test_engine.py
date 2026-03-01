@@ -1,12 +1,21 @@
-"""Tests for simulation engine (Long/Cash only) with lazy hold."""
+"""Tests for R² Momentum backtest engine."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from src.portfolio_sim.config import INITIAL_CAPITAL, TOP_N
-from src.portfolio_sim.engine import COST_RATE, _execute_trades, run_simulation
-from src.portfolio_sim.params import StrategyParams
+from src.portfolio_sim.config import INITIAL_CAPITAL
+from src.portfolio_sim.engine import (
+    COST_RATE,
+    compute_atr_close,
+    compute_r2_momentum,
+    has_large_gap,
+    is_above_kama,
+    is_risk_on,
+    run_backtest,
+    select_r2_assets,
+)
+from src.portfolio_sim.indicators import compute_kama_series
 
 
 @pytest.fixture
@@ -31,95 +40,152 @@ def sim_data():
     return close, open_, tickers
 
 
-def test_returns_two_series(sim_data):
+# ---------------------------------------------------------------------------
+# run_backtest integration tests
+# ---------------------------------------------------------------------------
+def test_returns_equity_and_spy(sim_data):
     close, open_, tickers = sim_data
-    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
-    assert isinstance(result.equity, pd.Series)
-    assert isinstance(result.spy_equity, pd.Series)
-    assert len(result.equity) == len(result.spy_equity)
+    equity, spy_eq, holdings, cash, trades = run_backtest(
+        close, open_, tickers, INITIAL_CAPITAL,
+    )
+    assert isinstance(equity, pd.Series)
+    assert isinstance(spy_eq, pd.Series)
+    assert len(equity) == len(spy_eq)
 
 
 def test_equity_starts_near_initial_capital(sim_data):
     close, open_, tickers = sim_data
-    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
-    equity = result.equity
-    assert abs(equity.iloc[0] - INITIAL_CAPITAL) / INITIAL_CAPITAL < 0.05
+    equity, _, _, _, _ = run_backtest(close, open_, tickers, INITIAL_CAPITAL)
+    assert abs(equity.iloc[0] - INITIAL_CAPITAL) / INITIAL_CAPITAL < 0.10
 
 
 def test_spy_benchmark_starts_at_initial_capital(sim_data):
     close, open_, tickers = sim_data
-    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
-    spy_eq = result.spy_equity
+    _, spy_eq, _, _, _ = run_backtest(close, open_, tickers, INITIAL_CAPITAL)
     assert spy_eq.iloc[0] == pytest.approx(INITIAL_CAPITAL, rel=0.01)
 
 
 def test_equity_positive(sim_data):
     close, open_, tickers = sim_data
-    result = run_simulation(close, open_, tickers, INITIAL_CAPITAL)
-    equity = result.equity
+    equity, _, _, _, _ = run_backtest(close, open_, tickers, INITIAL_CAPITAL)
     assert (equity >= 0).all()
 
 
-def test_strict_slot_sizing_single_buy():
-    """FIX #3: A single buy must get at most 1/TOP_N of equity, not all cash."""
-    shares = {}
-    open_prices = pd.Series({"AAPL": 100.0})
-    equity_at_open = 10000.0
-    trades = {"AAPL": 1.0}
-
-    _execute_trades(shares, trades, equity_at_open, open_prices)
-
-    max_slot = equity_at_open / TOP_N
-    position_value = shares["AAPL"] * 100.0
-    assert position_value <= max_slot * 1.01
+def test_holdings_history_is_dataframe(sim_data):
+    close, open_, tickers = sim_data
+    _, _, holdings, _, _ = run_backtest(close, open_, tickers, INITIAL_CAPITAL)
+    assert isinstance(holdings, pd.DataFrame)
 
 
-def test_strict_slot_sizing_prevents_concentration():
-    """With freed cash and 1 buy, position must still be <= 1/TOP_N of equity."""
-    shares = {"MSFT": 20.0}
-    open_prices = pd.Series({"MSFT": 250.0, "GOOG": 100.0})
-    equity_at_open = 10000.0
-    trades = {"GOOG": 1.0}
+def test_cash_history_is_series(sim_data):
+    close, open_, tickers = sim_data
+    _, _, _, cash, _ = run_backtest(close, open_, tickers, INITIAL_CAPITAL)
+    assert isinstance(cash, pd.Series)
+    assert len(cash) == len(close.index) - (max(90, 40) + 10)  # warmup trimmed
 
-    _execute_trades(shares, trades, equity_at_open, open_prices)
 
-    max_slot = equity_at_open / TOP_N
-    goog_value = shares["GOOG"] * 100.0
-    assert goog_value <= max_slot * 1.01
+def test_trade_log_is_list(sim_data):
+    close, open_, tickers = sim_data
+    _, _, _, _, trades = run_backtest(close, open_, tickers, INITIAL_CAPITAL)
+    assert isinstance(trades, list)
+
+
+def test_empty_on_insufficient_data():
+    """With fewer rows than warmup, should return empty series."""
+    dates = pd.bdate_range("2022-01-03", periods=10)
+    close = pd.DataFrame(
+        {"SPY": np.linspace(100, 105, 10), "A": np.linspace(50, 55, 10)},
+        index=dates,
+    )
+    open_ = close * 1.001
+    equity, spy_eq, _, _, _ = run_backtest(
+        close, open_, ["A"], INITIAL_CAPITAL, warmup_days=20,
+    )
+    assert equity.empty
 
 
 # ---------------------------------------------------------------------------
-# Risk parity sizing
+# Utility function unit tests
 # ---------------------------------------------------------------------------
-def test_execute_trades_with_weights():
-    """Verify _execute_trades respects provided risk parity weights."""
-    shares = {}
-    open_prices = pd.Series({"A": 100.0, "B": 100.0})
-    equity_at_open = 10000.0
-    trades = {"A": 1.0, "B": 1.0}
-    # A gets 70%, B gets 30% (simulating inverse vol weighting)
-    weights = {"A": 0.7, "B": 0.3}
+class TestIsRiskOn:
+    def test_risk_on_above_kama(self):
+        dates = pd.bdate_range("2022-01-03", periods=5)
+        spy_kama = pd.Series([100, 100, 100, 100, 100], index=dates, dtype=float)
+        spy_close = pd.Series([105, 105, 105, 105, 105], index=dates, dtype=float)
+        assert is_risk_on(spy_kama, spy_close, dates[2])
 
-    _execute_trades(shares, trades, equity_at_open, open_prices, top_n=2, weights=weights)
+    def test_risk_off_below_kama(self):
+        dates = pd.bdate_range("2022-01-03", periods=5)
+        spy_kama = pd.Series([100, 100, 100, 100, 100], index=dates, dtype=float)
+        spy_close = pd.Series([90, 90, 90, 90, 90], index=dates, dtype=float)
+        assert not is_risk_on(spy_kama, spy_close, dates[2])
 
-    value_a = shares["A"] * 100.0
-    value_b = shares["B"] * 100.0
-    assert value_a > value_b, "Higher weight should get larger allocation"
-    assert value_a == pytest.approx(equity_at_open * 0.7 / (1 + COST_RATE), rel=0.01)
-    assert value_b == pytest.approx(equity_at_open * 0.3 / (1 + COST_RATE), rel=0.01)
+    def test_nan_kama_assumes_risk_on(self):
+        dates = pd.bdate_range("2022-01-03", periods=5)
+        spy_kama = pd.Series([np.nan] * 5, index=dates, dtype=float)
+        spy_close = pd.Series([100] * 5, index=dates, dtype=float)
+        assert is_risk_on(spy_kama, spy_close, dates[2])
 
 
-def test_execute_trades_without_weights_uses_equal():
-    """Without weights, each buy gets 1/top_n."""
-    shares = {}
-    open_prices = pd.Series({"A": 100.0, "B": 100.0})
-    equity_at_open = 10000.0
-    trades = {"A": 1.0, "B": 1.0}
+class TestIsAboveKama:
+    def test_above(self):
+        dates = pd.bdate_range("2022-01-03", periods=5)
+        kama = pd.Series([100] * 5, index=dates, dtype=float)
+        prices = pd.Series([110] * 5, index=dates, dtype=float)
+        assert is_above_kama(kama, prices, dates[2])
 
-    _execute_trades(shares, trades, equity_at_open, open_prices, top_n=2, weights=None)
+    def test_below(self):
+        dates = pd.bdate_range("2022-01-03", periods=5)
+        kama = pd.Series([100] * 5, index=dates, dtype=float)
+        prices = pd.Series([90] * 5, index=dates, dtype=float)
+        assert not is_above_kama(kama, prices, dates[2])
 
-    value_a = shares["A"] * 100.0
-    value_b = shares["B"] * 100.0
-    max_per_slot = equity_at_open / 2
-    assert value_a == pytest.approx(max_per_slot / (1 + COST_RATE), rel=0.01)
-    assert value_b == pytest.approx(max_per_slot / (1 + COST_RATE), rel=0.01)
+
+class TestHasLargeGap:
+    def test_no_gap(self):
+        dates = pd.bdate_range("2022-01-03", periods=100)
+        prices = pd.Series(np.linspace(100, 110, 100), index=dates)
+        assert has_large_gap(prices, dates[-1], lookback=90) is False
+
+    def test_with_gap(self):
+        dates = pd.bdate_range("2022-01-03", periods=100)
+        values = np.linspace(100, 110, 100)
+        values[50] = values[49] * 1.20  # 20% gap
+        prices = pd.Series(values, index=dates)
+        assert has_large_gap(prices, dates[-1], lookback=90, threshold=0.15) is True
+
+
+class TestComputeAtrClose:
+    def test_atr_computed(self):
+        dates = pd.bdate_range("2022-01-03", periods=30)
+        prices = pd.Series(np.linspace(100, 130, 30), index=dates)
+        atr = compute_atr_close(prices, dates[-1], period=20)
+        assert atr > 0
+        assert not np.isnan(atr)
+
+    def test_atr_nan_insufficient_data(self):
+        dates = pd.bdate_range("2022-01-03", periods=5)
+        prices = pd.Series(np.linspace(100, 105, 5), index=dates)
+        atr = compute_atr_close(prices, dates[-1], period=20)
+        assert np.isnan(atr)
+
+
+class TestComputeR2Momentum:
+    def test_uptrend_positive_score(self):
+        prices = pd.Series(np.exp(np.linspace(0, 1, 100)))
+        ann_ret, r2, score = compute_r2_momentum(prices, period=90)
+        assert ann_ret > 0
+        assert 0 < r2 <= 1.0
+        assert score > 0
+
+    def test_insufficient_data_returns_nan(self):
+        prices = pd.Series([100, 101, 102])
+        ann_ret, r2, score = compute_r2_momentum(prices, period=90)
+        assert np.isnan(ann_ret)
+        assert np.isnan(r2)
+        assert np.isnan(score)
+
+    def test_high_r2_for_linear_trend(self):
+        prices = pd.Series(np.exp(np.linspace(0, 0.5, 100)))
+        _, r2, _ = compute_r2_momentum(prices, period=90)
+        assert r2 > 0.95  # nearly perfect linear trend in log space

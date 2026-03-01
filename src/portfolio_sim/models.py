@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
-from src.portfolio_sim.params import StrategyParams
+from src.portfolio_sim.params import R2StrategyParams, StrategyParams
 
 
 @dataclass
@@ -18,13 +18,14 @@ class SimulationResult:
     holdings_history: pd.DataFrame  # DatetimeIndex x tickers, values = share counts
     cash_history: pd.Series  # daily cash balance
     trade_log: list[dict] = field(default_factory=list)
-    # Each entry: {"date": date, "ticker": str, "action": "buy"|"sell"|"liquidate",
-    #              "shares": float, "price": float}
 
 
+# ---------------------------------------------------------------------------
+# V1/V2 KAMA Momentum WFO types (kept for V2 backward compatibility)
+# ---------------------------------------------------------------------------
 @dataclass
 class WFOStep:
-    """One step of walk-forward optimization."""
+    """One step of walk-forward optimization (V1/V2)."""
 
     step_index: int
     is_start: pd.Timestamp
@@ -34,16 +35,45 @@ class WFOStep:
     optimized_params: StrategyParams
     is_metrics: dict
     oos_metrics: dict
-    oos_equity: pd.Series  # raw OOS equity curve (starts at initial_capital)
-    oos_spy_equity: pd.Series  # SPY equity over same OOS period
+    oos_equity: pd.Series
+    oos_spy_equity: pd.Series
 
 
 @dataclass
 class WFOResult:
-    """Complete walk-forward optimization result."""
+    """Complete walk-forward optimization result (V1/V2)."""
 
     steps: list[WFOStep]
-    stitched_equity: pd.Series  # concatenated OOS equity curves
-    stitched_spy_equity: pd.Series  # concatenated SPY equity for same OOS periods
-    oos_metrics: dict  # metrics computed on stitched OOS equity
-    final_params: StrategyParams  # params from the last IS window (for live use)
+    stitched_equity: pd.Series
+    stitched_spy_equity: pd.Series
+    oos_metrics: dict
+    final_params: StrategyParams
+
+
+# ---------------------------------------------------------------------------
+# R² Momentum WFO types (primary strategy)
+# ---------------------------------------------------------------------------
+@dataclass
+class R2WFOStep:
+    """One step of R² walk-forward optimization."""
+
+    step_index: int
+    is_start: pd.Timestamp
+    is_end: pd.Timestamp
+    oos_start: pd.Timestamp
+    oos_end: pd.Timestamp
+    optimized_params: R2StrategyParams
+    is_metrics: dict
+    oos_metrics: dict
+    oos_equity: pd.Series
+
+
+@dataclass
+class R2WFOResult:
+    """Complete R² walk-forward result."""
+
+    steps: list[R2WFOStep]
+    stitched_equity: pd.Series
+    stitched_spy_equity: pd.Series
+    oos_metrics: dict
+    final_params: R2StrategyParams

@@ -13,7 +13,9 @@ import numpy as np
 import pandas as pd
 import structlog
 
-from src.portfolio_sim.config import INITIAL_CAPITAL
+import optuna
+
+from src.portfolio_sim.config import INITIAL_CAPITAL, SCHEDULE_SEARCH_SPACE
 from src.portfolio_sim.models import WFOResult, WFOStep
 from src.portfolio_sim.optimizer import (
     _get_kama_periods_from_space,
@@ -52,8 +54,10 @@ def run_walk_forward_v2(
     min_is_days: int | None = None,
     oos_days: int | None = None,
     max_dd_limit: float = V2_MAX_DD_LIMIT,
+    metric: str = "total_return",
     kama_caches: dict[int, dict[str, pd.Series]] | None = None,
     executor: ProcessPoolExecutor | None = None,
+    verbose: bool = True,
 ) -> WFOResult:
     """Run sliding walk-forward optimisation with V2 vol-targeted engine."""
     base_params = base_params or StrategyParamsV2()
@@ -133,8 +137,10 @@ def run_walk_forward_v2(
                 n_workers=n_workers,
                 max_dd_limit=max_dd_limit,
                 min_n_days=min_n_days_is,
+                metric=metric,
                 kama_caches=kama_caches,
                 executor=executor,
+                verbose=verbose,
             )
 
             best_params = find_best_params_v2(sens_result)
@@ -236,6 +242,139 @@ def run_walk_forward_v2(
         oos_metrics=oos_metrics,
         final_params=final_params,
     )
+
+
+# ---------------------------------------------------------------------------
+# Schedule optimization (outer Optuna loop over oos_weeks / min_is_weeks)
+# ---------------------------------------------------------------------------
+def run_v2_schedule_optimization(
+    close_prices: pd.DataFrame,
+    open_prices: pd.DataFrame,
+    tickers: list[str],
+    initial_capital: float = INITIAL_CAPITAL,
+    base_params: StrategyParamsV2 | None = None,
+    space: dict[str, dict] | None = None,
+    schedule_space: dict[str, dict] | None = None,
+    n_trials_per_step: int = 100,
+    n_schedule_trials: int = 20,
+    n_workers: int | None = None,
+    max_dd_limit: float = V2_MAX_DD_LIMIT,
+    metric: str = "total_return",
+) -> WFOResult:
+    """Optimize WFO schedule params (oos_weeks, min_is_weeks) via outer Optuna loop.
+
+    Each outer trial suggests schedule params, runs a full V2 WFO, and uses the
+    stitched OOS Sharpe ratio as the objective.
+    """
+    schedule_space = schedule_space or SCHEDULE_SEARCH_SPACE
+
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
+    outer_study = optuna.create_study(
+        direction="maximize",
+        sampler=optuna.samplers.TPESampler(seed=123),
+    )
+
+    results: list[dict] = []
+
+    for trial_idx in range(n_schedule_trials):
+        trial = outer_study.ask()
+        oos_weeks = trial.suggest_int(
+            "oos_weeks",
+            schedule_space["oos_weeks"]["low"],
+            schedule_space["oos_weeks"]["high"],
+            step=schedule_space["oos_weeks"]["step"],
+        )
+        min_is_weeks = trial.suggest_int(
+            "min_is_weeks",
+            schedule_space["min_is_weeks"]["low"],
+            schedule_space["min_is_weeks"]["high"],
+            step=schedule_space["min_is_weeks"]["step"],
+        )
+
+        oos_days = oos_weeks * 5
+        min_is_days = min_is_weeks * 5
+
+        print(f"\n  Schedule trial {trial_idx + 1}/{n_schedule_trials}: "
+              f"oos_weeks={oos_weeks} ({oos_days}d), "
+              f"min_is_weeks={min_is_weeks} ({min_is_days}d)")
+
+        try:
+            result = run_walk_forward_v2(
+                close_prices, open_prices, tickers,
+                initial_capital=initial_capital,
+                base_params=base_params,
+                space=space,
+                n_trials_per_step=n_trials_per_step,
+                n_workers=n_workers,
+                min_is_days=min_is_days,
+                oos_days=oos_days,
+                max_dd_limit=max_dd_limit,
+                metric=metric,
+                verbose=False,
+            )
+            sharpe = result.oos_metrics.get("sharpe", -999.0)
+            calmar = result.oos_metrics.get("calmar", -999.0)
+            cagr = result.oos_metrics.get("cagr", 0.0)
+            maxdd = result.oos_metrics.get("max_drawdown", 0.0)
+            obj = sharpe if sharpe > -999.0 else -999.0
+        except (ValueError, Exception) as e:
+            print(f"    FAILED: {e}")
+            obj = -999.0
+            sharpe = calmar = cagr = maxdd = 0.0
+            result = None
+
+        outer_study.tell(trial, obj)
+
+        results.append({
+            "oos_weeks": oos_weeks,
+            "min_is_weeks": min_is_weeks,
+            "oos_days": oos_days,
+            "min_is_days": min_is_days,
+            "sharpe": sharpe,
+            "calmar": calmar,
+            "cagr": cagr,
+            "max_drawdown": maxdd,
+        })
+
+        print(f"    CAGR={cagr:.2%}  Sharpe={sharpe:.2f}  "
+              f"MaxDD={maxdd:.2%}  Calmar={calmar:.2f}")
+
+    # Report all results
+    results_df = pd.DataFrame(results).sort_values("sharpe", ascending=False)
+    print("\n" + "=" * 80)
+    print("V2 SCHEDULE OPTIMIZATION RESULTS")
+    print("=" * 80)
+    print(f"{'#':>3}  {'OOS_wk':>6}  {'IS_wk':>5}  "
+          f"{'CAGR':>8}  {'Sharpe':>7}  {'MaxDD':>8}  {'Calmar':>7}")
+    print("-" * 80)
+    for i, row in enumerate(results_df.itertuples(), 1):
+        print(f"{i:>3}  {row.oos_weeks:>6}  {row.min_is_weeks:>5}  "
+              f"{row.cagr:>8.2%}  {row.sharpe:>7.2f}  "
+              f"{row.max_drawdown:>8.2%}  {row.calmar:>7.2f}")
+    print("-" * 80)
+
+    # Run best combination with full verbose output
+    best = results_df.iloc[0]
+    best_oos_days = int(best["oos_days"])
+    best_min_is_days = int(best["min_is_days"])
+    print(f"\nBest: oos_weeks={int(best['oos_weeks'])}, "
+          f"min_is_weeks={int(best['min_is_weeks'])}")
+    print(f"\nRe-running best combination with full output...")
+
+    best_result = run_walk_forward_v2(
+        close_prices, open_prices, tickers,
+        initial_capital=initial_capital,
+        base_params=base_params,
+        space=space,
+        n_trials_per_step=n_trials_per_step,
+        n_workers=n_workers,
+        min_is_days=best_min_is_days,
+        oos_days=best_oos_days,
+        max_dd_limit=max_dd_limit,
+        metric=metric,
+        verbose=True,
+    )
+    return best_result
 
 
 # ---------------------------------------------------------------------------

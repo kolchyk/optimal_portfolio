@@ -137,12 +137,13 @@ def run_optuna_batch_loop_v2(
     fixed_params: dict | None = None,
     slice_spec: dict | None = None,
     desc: str = "V2 Optuna trials",
+    verbose: bool = True,
 ) -> pd.DataFrame:
     """Run batch-parallel Optuna ask/tell loop for V2 strategy."""
     if user_attr_keys is None:
         user_attr_keys = metric_keys
 
-    pbar = tqdm(total=n_trials, desc=desc, unit="trial")
+    pbar = tqdm(total=n_trials, desc=desc, unit="trial", disable=not verbose)
     trials_done = 0
 
     while trials_done < n_trials:

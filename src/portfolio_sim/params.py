@@ -1,53 +1,67 @@
-"""Strategy parameter container for walk-forward optimization."""
+"""Strategy parameter containers for walk-forward optimization."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 from src.portfolio_sim.config import (
-    CORR_THRESHOLD,
     KAMA_BUFFER,
     KAMA_PERIOD,
     KAMA_SPY_PERIOD,
-    LOOKBACK_PERIOD,
     OOS_DAYS,
     TOP_N,
-    VOLATILITY_LOOKBACK,
-    WEIGHTING_MODE,
 )
 
 
+# ---------------------------------------------------------------------------
+# V1 KAMA Momentum params (kept for V2 backward compatibility)
+# ---------------------------------------------------------------------------
 @dataclass(frozen=True)
 class StrategyParams:
-    """Immutable parameter set for a single backtest run.
+    """Immutable parameter set for V1/V2 KAMA momentum backtest.
 
     frozen=True makes it hashable, usable as dict keys and in sets.
-    Default values match the current config.py constants.
     """
 
     kama_period: int = KAMA_PERIOD
     kama_spy_period: int = KAMA_SPY_PERIOD
-    lookback_period: int = LOOKBACK_PERIOD
+    lookback_period: int = 40
     top_n: int = TOP_N
     kama_buffer: float = KAMA_BUFFER
     use_risk_adjusted: bool = True
-
-    # Risk-parity (inverse-volatility) lookback window
-    volatility_lookback: int = VOLATILITY_LOOKBACK
-
-    # WFO out-of-sample window (trading days)
+    volatility_lookback: int = 20
     oos_days: int = OOS_DAYS
-
-    # Max pairwise correlation with held positions (1.0 = no filter)
-    corr_threshold: float = CORR_THRESHOLD
-
-    # Position sizing mode: "equal_weight" or "risk_parity"
-    weighting_mode: str = WEIGHTING_MODE
+    corr_threshold: float = 0.7
+    weighting_mode: str = "equal_weight"
 
     @property
     def warmup(self) -> int:
-        """Minimum bars needed before trading can start."""
         return max(
             self.lookback_period,
             self.kama_period,
             self.kama_spy_period,
             self.volatility_lookback,
         ) + 10
+
+
+# ---------------------------------------------------------------------------
+# R² Momentum params (primary strategy)
+# ---------------------------------------------------------------------------
+@dataclass(frozen=True)
+class R2StrategyParams:
+    """Immutable parameter set for R² Momentum backtest."""
+
+    r2_lookback: int = 90
+    kama_asset_period: int = KAMA_PERIOD
+    kama_spy_period: int = KAMA_SPY_PERIOD
+    kama_buffer: float = KAMA_BUFFER
+    gap_threshold: float = 0.15
+    atr_period: int = 20
+    risk_factor: float = 0.001
+    top_n: int = TOP_N
+    rebal_period_weeks: int = 2
+
+    @property
+    def warmup(self) -> int:
+        return max(self.r2_lookback, self.kama_asset_period, self.kama_spy_period) + 10
+
+
+R2_PARAM_NAMES = [f.name for f in fields(R2StrategyParams)]

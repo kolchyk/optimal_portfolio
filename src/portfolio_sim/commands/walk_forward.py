@@ -44,15 +44,37 @@ def register(subparsers) -> None:
         "--min-is-days", type=int, default=126,
         help="IS window size in trading days (default: 126 \u2248 6 months)",
     )
+    p.add_argument(
+        "--oos-weeks", type=int, default=None,
+        help="OOS window in weeks (overrides --oos-days; converted to days \u00d7 5)",
+    )
+    p.add_argument(
+        "--min-is-weeks", type=int, default=None,
+        help="IS window in weeks (overrides --min-is-days; converted to days \u00d7 5)",
+    )
+    p.add_argument(
+        "--metric", default="total_return",
+        choices=("total_return", "cagr", "sharpe", "calmar"),
+        help="Optimization metric (default: total_return)",
+    )
+    p.add_argument(
+        "--optimize-schedule", action="store_true",
+        help="Optimize WFO schedule params (oos_weeks, min_is_weeks) via outer Optuna loop",
+    )
+    p.add_argument(
+        "--n-schedule-trials", type=int, default=20,
+        help="Number of outer Optuna trials for schedule optimization (default: 20)",
+    )
 
 
 def run(args) -> None:
     setup_logging()
     output_dir = create_output_dir("wfo_r2")
 
-    from scripts.wfo_r2_momentum import (
-        R2StrategyParams,
+    from src.portfolio_sim.params import R2StrategyParams
+    from src.portfolio_sim.walk_forward import (
         format_r2_wfo_report,
+        run_r2_schedule_optimization,
         run_r2_walk_forward,
     )
 
@@ -79,22 +101,46 @@ def run(args) -> None:
         print("Try: python -m src.portfolio_sim walk-forward --refresh")
         sys.exit(1)
 
-    print(f"\nStarting walk-forward optimization...")
-    print(f"  IS window: {args.min_is_days} days (~{args.min_is_days / 21:.0f} months)")
-    print(f"  OOS window: {args.oos_days} days (~{args.oos_days / 21:.0f} weeks)")
-    print(f"  Trials per step: {args.n_trials}")
-    print()
+    # Resolve weeks → days (weeks override days)
+    oos_days = args.oos_weeks * 5 if args.oos_weeks is not None else args.oos_days
+    min_is_days = args.min_is_weeks * 5 if args.min_is_weeks is not None else args.min_is_days
 
-    result = run_r2_walk_forward(
-        close_prices,
-        open_prices,
-        valid_tickers,
-        INITIAL_CAPITAL,
-        n_trials_per_step=args.n_trials,
-        n_workers=args.n_workers,
-        min_is_days=args.min_is_days,
-        oos_days=args.oos_days,
-    )
+    if args.optimize_schedule:
+        print(f"\nStarting schedule optimization...")
+        print(f"  Schedule trials: {args.n_schedule_trials}")
+        print(f"  Inner trials per step: {args.n_trials}")
+        print(f"  Metric: {args.metric}")
+        print()
+
+        result = run_r2_schedule_optimization(
+            close_prices,
+            open_prices,
+            valid_tickers,
+            INITIAL_CAPITAL,
+            n_trials_per_step=args.n_trials,
+            n_schedule_trials=args.n_schedule_trials,
+            n_workers=args.n_workers,
+            metric=args.metric,
+        )
+    else:
+        print(f"\nStarting walk-forward optimization...")
+        print(f"  IS window: {min_is_days} days (~{min_is_days / 21:.0f} months)")
+        print(f"  OOS window: {oos_days} days (~{oos_days / 21:.0f} weeks)")
+        print(f"  Trials per step: {args.n_trials}")
+        print(f"  Metric: {args.metric}")
+        print()
+
+        result = run_r2_walk_forward(
+            close_prices,
+            open_prices,
+            valid_tickers,
+            INITIAL_CAPITAL,
+            n_trials_per_step=args.n_trials,
+            n_workers=args.n_workers,
+            min_is_days=min_is_days,
+            oos_days=oos_days,
+            metric=args.metric,
+        )
 
     report = format_r2_wfo_report(result)
     print(f"\n{report}")
