@@ -109,6 +109,8 @@ SEARCH_SPACE: dict[str, dict] = {
     "portfolio_vol_lookback": {"type": "int", "low": 15, "high": 35, "step": 5},
     "target_vol": {"type": "float", "low": 0.08, "high": 0.20, "step": 0.02},
     "max_leverage": {"type": "categorical", "choices": [1.0, 1.1, 1.25, 1.5]},
+    # Minimum investment floor
+    "min_invested_pct": {"type": "float", "low": 0.0, "high": 0.90, "step": 0.10},
 }
 
 PARAM_NAMES: list[str] = [
@@ -117,6 +119,7 @@ PARAM_NAMES: list[str] = [
     "top_n", "rebal_days", "max_per_class",
     "portfolio_vol_lookback",
     "target_vol", "max_leverage",
+    "min_invested_pct",
 ]
 
 DEFAULT_N_TRIALS: int = 200

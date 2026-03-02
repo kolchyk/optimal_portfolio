@@ -31,6 +31,7 @@ PARAMS = StrategyParams(
     target_vol=0.12,
     max_leverage=1.1,
     portfolio_vol_lookback=25,
+    min_invested_pct=1.0,
 )
 
 PERIOD = "3y"

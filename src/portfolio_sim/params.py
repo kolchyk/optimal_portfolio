@@ -49,9 +49,21 @@ class StrategyParams:
     portfolio_vol_lookback: int = 25
     """Trailing trading days for realised portfolio vol estimation."""
 
+    # --- Minimum investment floor ---
+    min_invested_pct: float = 0.0
+    """Minimum fraction of equity to keep invested (0.0 = disabled, 0.8 = 80% floor).
+
+    Overrides vol-targeting scale when it would reduce investment below this floor.
+    Extra capital goes into the same momentum assets proportionally.
+    """
+
     def __post_init__(self):
         if self.r2_window <= 0:
             raise ValueError(f"r2_window must be positive, got {self.r2_window}")
+        if not (0.0 <= self.min_invested_pct <= 1.0):
+            raise ValueError(
+                f"min_invested_pct must be in [0, 1], got {self.min_invested_pct}"
+            )
 
     @property
     def warmup(self) -> int:

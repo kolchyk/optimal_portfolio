@@ -162,3 +162,49 @@ def test_max_per_class_allows_multiple_classes(sim_data):
     finally:
         cfg.ASSET_CLASS_MAP.clear()
         cfg.ASSET_CLASS_MAP.update(original_map)
+
+
+# ---------------------------------------------------------------------------
+# min_invested_pct tests
+# ---------------------------------------------------------------------------
+def test_min_invested_pct_default_unchanged(sim_data):
+    """Default min_invested_pct=0.0 produces identical results to no floor."""
+    close, open_, tickers, high, low = sim_data
+    params_default = StrategyParams()
+    params_zero = StrategyParams(min_invested_pct=0.0)
+
+    r1 = run_simulation(close, open_, tickers, INITIAL_CAPITAL,
+                         params=params_default, high_prices=high, low_prices=low)
+    r2 = run_simulation(close, open_, tickers, INITIAL_CAPITAL,
+                         params=params_zero, high_prices=high, low_prices=low)
+
+    pd.testing.assert_series_equal(r1.equity, r2.equity)
+
+
+def test_min_invested_pct_increases_investment(sim_data):
+    """Setting min_invested_pct=0.8 should result in less cash on average."""
+    close, open_, tickers, high, low = sim_data
+
+    r_default = run_simulation(
+        close, open_, tickers, INITIAL_CAPITAL,
+        params=StrategyParams(),
+        high_prices=high, low_prices=low,
+    )
+    r_floor = run_simulation(
+        close, open_, tickers, INITIAL_CAPITAL,
+        params=StrategyParams(min_invested_pct=0.8),
+        high_prices=high, low_prices=low,
+    )
+
+    # Average cash ratio should be lower with the floor
+    avg_cash_default = (r_default.cash_history / r_default.equity).mean()
+    avg_cash_floor = (r_floor.cash_history / r_floor.equity).mean()
+    assert avg_cash_floor < avg_cash_default
+
+
+def test_min_invested_pct_validation():
+    """min_invested_pct outside [0, 1] should raise ValueError."""
+    with pytest.raises(ValueError, match="min_invested_pct"):
+        StrategyParams(min_invested_pct=1.5)
+    with pytest.raises(ValueError, match="min_invested_pct"):
+        StrategyParams(min_invested_pct=-0.1)

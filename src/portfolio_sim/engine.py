@@ -249,6 +249,7 @@ def run_simulation(
             cash = _execute_trades(
                 shares, pending_trades, equity_at_open, daily_open,
                 weights=pending_weights, scale=current_scale,
+                min_invested_pct=p.min_invested_pct,
             )
 
             # Log trades
@@ -282,7 +283,10 @@ def run_simulation(
                     shares[t] * daily_open.get(t, 0.0) for t in shares
                 )
                 current_fraction = held_value / equity_at_open
-                target_fraction = current_scale
+                target_fraction = (
+                    max(current_scale, p.min_invested_pct)
+                    if p.min_invested_pct > 0 else current_scale
+                )
 
                 if current_fraction > target_fraction + 0.05:
                     trim_ratio = target_fraction / current_fraction
@@ -480,6 +484,7 @@ def _execute_trades(
     open_prices: pd.Series,
     weights: dict[str, float] | None = None,
     scale: float = 1.0,
+    min_invested_pct: float = 0.0,
 ) -> float:
     """Execute trades with vol-targeting scale.  Mutates ``shares``.
 
@@ -500,7 +505,9 @@ def _execute_trades(
     available = equity_at_open - held_value - total_cost
 
     # Scale budget for new buys by vol-targeting (scale already bounded by max_leverage)
-    target_invested = equity_at_open * scale
+    # Apply min_invested_pct floor: invest at least this fraction of equity
+    effective_scale = max(scale, min_invested_pct) if min_invested_pct > 0 else scale
+    target_invested = equity_at_open * effective_scale
     budget_for_buys = max(0.0, target_invested - held_value - total_cost)
 
     buys = [t for t, action in trades.items() if action == 1.0 and t not in shares]

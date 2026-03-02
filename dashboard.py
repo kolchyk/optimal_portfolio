@@ -193,6 +193,7 @@ def _param_fingerprint(sidebar: dict) -> tuple:
         sidebar["target_vol"],
         sidebar["max_leverage"],
         sidebar["portfolio_vol_lookback"],
+        sidebar["min_invested_pct"],
     )
 
 
@@ -301,7 +302,7 @@ def plot_equity_curve(
             yaxis_title="Portfolio Value ($)",
             height=480,
             yaxis_type=yaxis_type,
-            xaxis=dict(rangeslider=dict(visible=True, bgcolor="#111827"), type="date"),
+            xaxis=dict(type="date"),
         )
     )
     return fig
@@ -793,6 +794,16 @@ def _render_sidebar() -> dict:
                 help="Window for estimating realized portfolio volatility",
             )
 
+            _default_mip = opt.min_invested_pct if opt else _DEFAULTS.min_invested_pct
+            min_invested_pct_int = st.slider(
+                "Min Invested %", min_value=0, max_value=90,
+                value=int(round(float(_default_mip) * 100)), step=10,
+                format="%d%%",
+                help="Floor for invested fraction. 0 = disabled (vol-targeting fully controls). "
+                     "80 = at least 80% of equity always invested.",
+            )
+            min_invested_pct = min_invested_pct_int / 100.0
+
     return {
         "data_years": data_years,
         "refresh": refresh,
@@ -809,6 +820,7 @@ def _render_sidebar() -> dict:
         "target_vol": target_vol,
         "max_leverage": max_leverage,
         "portfolio_vol_lookback": portfolio_vol_lookback,
+        "min_invested_pct": min_invested_pct,
         "optimize_clicked": optimize_clicked,
     }
 
@@ -995,6 +1007,7 @@ def main():
                 target_vol=sidebar["target_vol"],
                 max_leverage=sidebar["max_leverage"],
                 portfolio_vol_lookback=sidebar["portfolio_vol_lookback"],
+                min_invested_pct=sidebar["min_invested_pct"],
             )
 
             valid = filter_valid_tickers(close_prices, params.warmup)
