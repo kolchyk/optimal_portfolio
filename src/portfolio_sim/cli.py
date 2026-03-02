@@ -13,10 +13,13 @@ def main(argv: list[str] | None = None) -> None:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     from src.portfolio_sim import command as walk_forward
+    from src.portfolio_sim import command_stability as stability
 
     commands: dict[str, object] = {}
     walk_forward.register(subparsers)
     commands[walk_forward.COMMAND_NAME] = walk_forward.run
+    stability.register(subparsers)
+    commands[stability.COMMAND_NAME] = stability.run
 
     args = parser.parse_args(argv)
     commands[args.command](args)
