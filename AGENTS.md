@@ -10,7 +10,7 @@
 - Never change `COMMISSION_RATE = 0.0002` (2 bps) or `SLIPPAGE_RATE = 0.0005` (5 bps) in `config.py` without explicit user instruction.
 - Limit `yfinance` data fetches to 5 years of history. Do not download longer periods.
 - Cache price data in `output/cache/`; download tickers in batches of 100.
-- Do not modify Optuna parameter search ranges without explicit user direction. Current confirmed ranges in `SEARCH_SPACE`: `r2_lookback` 60–120 step 20; `kama_asset_period` [10,20,30,40,50]; `kama_spy_period` [20,30,40,50]; `kama_buffer` 0.005–0.03 step 0.005; `gap_threshold` 0.10–0.20 step 0.025; `atr_period` 10–30 step 5; `top_n` 5–15 step 5; `rebal_period_weeks` 2–4 step 1; `corr_threshold` 0.5–1.0 step 0.1; `target_vol` 0.05–0.20 step 0.05; `max_leverage` [1.0, 1.25, 1.5, 2.0]; `portfolio_vol_lookback` 15–35 step 10.
+- Do not modify Optuna parameter search ranges without explicit user direction. Current confirmed ranges in `SEARCH_SPACE`: `kama_asset_period` [10,20,30,40,50]; `kama_buffer` 0.005–0.03 step 0.005; `portfolio_vol_lookback` 15–35 step 5; `target_vol` 0.05–0.25 step 0.05; `max_leverage` [1.0, 1.25, 1.5, 2.0]. Rebalancing is fixed monthly (`rebal_days=21`).
 - Three strategy bugs that must never be reintroduced: (1) Rank-21 Trap — sell only when KAMA stop-loss triggers or score < 0, not when a stock drops out of top-N (Lazy Hold); (2) SPY Dribble — use directional thresholds with `kama_buffer` for bull/bear hysteresis; (3) All-in Sizing — use ATR risk parity sizing, not total-cash divided by number of buys.
 - Only one optimization mode exists: Walk-Forward Optimization (WFO).
 - When shown a plan, trim unnecessary scope before implementing rather than building everything proposed.

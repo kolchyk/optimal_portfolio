@@ -97,24 +97,32 @@ CACHE_DIR: Path = DEFAULT_OUTPUT_DIR / "cache"
 # Optimization search space (R² Momentum + vol-targeting parameters)
 # ---------------------------------------------------------------------------
 SEARCH_SPACE: dict[str, dict] = {
-    # R² Momentum params (r2_windows/weights are fixed, not optimized)
-    "kama_asset_period": {"type": "categorical", "choices": [10, 20, 30, 40, 50]},
-    "kama_buffer": {"type": "float", "low": 0.005, "high": 0.03, "step": 0.005},
-    "rebal_period_weeks": {"type": "int", "low": 1, "high": 6, "step": 1},
-    "gap_threshold": {"type": "float", "low": 0.10, "high": 0.20, "step": 0.025},
-    "max_per_class": {"type": "int", "low": 2, "high": 5, "step": 1},
+    # R² Momentum params
+    "r2_window": {"type": "categorical", "choices": [20, 25, 28, 30, 35, 45, 60]},
+    "kama_asset_period": {"type": "categorical", "choices": [10, 12, 13, 15, 20, 30]},
+    "kama_buffer": {"type": "float", "low": 0.02, "high": 0.05, "step": 0.005},
+    # Portfolio construction params
+    "top_n": {"type": "categorical", "choices": [5, 8, 10, 12, 15]},
+    "rebal_days": {"type": "categorical", "choices": [10, 14, 18, 21, 28]},
+    "max_per_class": {"type": "categorical", "choices": [3, 4, 5, 6, 7]},
     # Vol-targeting params
     "portfolio_vol_lookback": {"type": "int", "low": 15, "high": 35, "step": 5},
+    "target_vol": {"type": "float", "low": 0.08, "high": 0.20, "step": 0.02},
+    "max_leverage": {"type": "categorical", "choices": [1.0, 1.1, 1.25, 1.5]},
 }
 
 PARAM_NAMES: list[str] = [
+    "r2_window",
     "kama_asset_period", "kama_buffer",
-    "rebal_period_weeks", "gap_threshold",
-    "max_per_class", "portfolio_vol_lookback",
+    "top_n", "rebal_days", "max_per_class",
+    "portfolio_vol_lookback",
+    "target_vol", "max_leverage",
 ]
 
 DEFAULT_N_TRIALS: int = 200
-MAX_DD_LIMIT: float = 0.35
+DEFAULT_MIN_IS_DAYS: int = 126
+DEFAULT_OOS_DAYS: int = 21
+MAX_DD_LIMIT: float = 0.25
 
 
 def get_kama_periods(space: dict[str, dict] | None = None) -> list[int]:
@@ -134,12 +142,3 @@ def get_kama_periods(space: dict[str, dict] | None = None) -> list[int]:
                 spec.get("step", 5),
             ))
     return sorted(set(periods))
-
-
-# ---------------------------------------------------------------------------
-# Schedule search space (WFO window optimization)
-# ---------------------------------------------------------------------------
-SCHEDULE_SEARCH_SPACE: dict[str, dict] = {
-    "oos_weeks": {"type": "int", "low": 10, "high": 20, "step": 10},
-    "min_is_weeks": {"type": "int", "low": 20, "high": 40, "step": 10},
-}

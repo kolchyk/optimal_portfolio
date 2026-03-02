@@ -18,9 +18,10 @@ import pandas as pd
 import structlog
 
 from src.portfolio_sim.config import (
+    DEFAULT_MIN_IS_DAYS,
+    DEFAULT_OOS_DAYS,
     INITIAL_CAPITAL,
     MAX_DD_LIMIT,
-    SCHEDULE_SEARCH_SPACE,
     SEARCH_SPACE,
     get_kama_periods,
 )
@@ -128,9 +129,9 @@ def run_walk_forward(
     base_params = base_params or StrategyParams()
     space = space or SEARCH_SPACE
     if min_is_days is None:
-        min_is_days = 126
+        min_is_days = DEFAULT_MIN_IS_DAYS
     if oos_days is None:
-        oos_days = 21
+        oos_days = DEFAULT_OOS_DAYS
     if not n_workers or n_workers < 1:
         n_workers = os.cpu_count()
 
@@ -322,169 +323,6 @@ def run_walk_forward(
 
 
 # ---------------------------------------------------------------------------
-# Schedule optimization (outer Optuna loop over oos_weeks / min_is_weeks)
-# ---------------------------------------------------------------------------
-def run_schedule_optimization(
-    close_prices: pd.DataFrame,
-    open_prices: pd.DataFrame,
-    tickers: list[str],
-    initial_capital: float = INITIAL_CAPITAL,
-    base_params: StrategyParams | None = None,
-    space: dict[str, dict] | None = None,
-    schedule_space: dict[str, dict] | None = None,
-    n_trials_per_step: int = 100,
-    n_schedule_trials: int = 20,
-    n_workers: int | None = None,
-    max_dd_limit: float = MAX_DD_LIMIT,
-    metric: str = "total_return",
-    high_prices: pd.DataFrame | None = None,
-    low_prices: pd.DataFrame | None = None,
-) -> WFOResult:
-    """Optimize WFO schedule params via outer Optuna loop."""
-    base_params = base_params or StrategyParams()
-    space = space or SEARCH_SPACE
-    schedule_space = schedule_space or SCHEDULE_SEARCH_SPACE
-    if not n_workers or n_workers < 1:
-        n_workers = os.cpu_count()
-
-    optuna.logging.set_verbosity(optuna.logging.WARNING)
-    outer_study = optuna.create_study(
-        direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=123),
-    )
-
-    kama_periods = get_kama_periods(space)
-    kama_caches = precompute_kama_caches(
-        close_prices, tickers, kama_periods, n_workers,
-    )
-
-    executor = ProcessPoolExecutor(
-        max_workers=n_workers,
-        initializer=init_eval_worker,
-        initargs=(close_prices, open_prices, tickers, initial_capital, kama_caches,
-                  high_prices, low_prices),
-    )
-
-    results: list[dict] = []
-
-    try:
-        for trial_idx in range(n_schedule_trials):
-            trial = outer_study.ask()
-            oos_weeks = trial.suggest_int(
-                "oos_weeks",
-                schedule_space["oos_weeks"]["low"],
-                schedule_space["oos_weeks"]["high"],
-                step=schedule_space["oos_weeks"]["step"],
-            )
-            min_is_weeks = trial.suggest_int(
-                "min_is_weeks",
-                schedule_space["min_is_weeks"]["low"],
-                schedule_space["min_is_weeks"]["high"],
-                step=schedule_space["min_is_weeks"]["step"],
-            )
-
-            oos_d = oos_weeks * 5
-            min_is_d = min_is_weeks * 5
-
-            if oos_weeks > min_is_weeks:
-                outer_study.tell(trial, -999.0)
-                continue
-
-            print(f"\n  Schedule trial {trial_idx + 1}/{n_schedule_trials}: "
-                  f"oos_weeks={oos_weeks} ({oos_d}d), "
-                  f"min_is_weeks={min_is_weeks} ({min_is_d}d)")
-
-            try:
-                result = run_walk_forward(
-                    close_prices, open_prices, tickers,
-                    initial_capital=initial_capital,
-                    base_params=base_params,
-                    space=space,
-                    n_trials_per_step=n_trials_per_step,
-                    n_workers=n_workers,
-                    min_is_days=min_is_d,
-                    oos_days=oos_d,
-                    max_dd_limit=max_dd_limit,
-                    metric=metric,
-                    kama_caches=kama_caches,
-                    executor=executor,
-                    verbose=False,
-                    high_prices=high_prices,
-                    low_prices=low_prices,
-                )
-                sharpe = result.oos_metrics.get("sharpe", -999.0)
-                calmar = result.oos_metrics.get("calmar", -999.0)
-                cagr = result.oos_metrics.get("cagr", 0.0)
-                maxdd = result.oos_metrics.get("max_drawdown", 0.0)
-                obj = sharpe if sharpe > -999.0 else -999.0
-            except (ValueError, Exception) as e:
-                print(f"    FAILED: {e}")
-                obj = -999.0
-                sharpe = calmar = cagr = maxdd = 0.0
-                result = None
-
-            outer_study.tell(trial, obj)
-
-            results.append({
-                "oos_weeks": oos_weeks,
-                "min_is_weeks": min_is_weeks,
-                "oos_days": oos_d,
-                "min_is_days": min_is_d,
-                "sharpe": sharpe,
-                "calmar": calmar,
-                "cagr": cagr,
-                "max_drawdown": maxdd,
-            })
-
-            print(f"    CAGR={cagr:.2%}  Sharpe={sharpe:.2f}  "
-                  f"MaxDD={maxdd:.2%}  Calmar={calmar:.2f}")
-
-        # Report all results
-        results_df = pd.DataFrame(results).sort_values("sharpe", ascending=False)
-        print("\n" + "=" * 80)
-        print("SCHEDULE OPTIMIZATION RESULTS")
-        print("=" * 80)
-        print(f"{'#':>3}  {'OOS_wk':>6}  {'IS_wk':>5}  "
-              f"{'CAGR':>8}  {'Sharpe':>7}  {'MaxDD':>8}  {'Calmar':>7}")
-        print("-" * 80)
-        for i, row in enumerate(results_df.itertuples(), 1):
-            print(f"{i:>3}  {row.oos_weeks:>6}  {row.min_is_weeks:>5}  "
-                  f"{row.cagr:>8.2%}  {row.sharpe:>7.2f}  "
-                  f"{row.max_drawdown:>8.2%}  {row.calmar:>7.2f}")
-        print("-" * 80)
-
-        # Run best combination with full verbose output
-        best = results_df.iloc[0]
-        best_oos_days = int(best["oos_days"])
-        best_min_is_days = int(best["min_is_days"])
-        print(f"\nBest: oos_weeks={int(best['oos_weeks'])}, "
-              f"min_is_weeks={int(best['min_is_weeks'])}")
-        print(f"\nRe-running best combination with full output...")
-
-        best_result = run_walk_forward(
-            close_prices, open_prices, tickers,
-            initial_capital=initial_capital,
-            base_params=base_params,
-            space=space,
-            n_trials_per_step=n_trials_per_step,
-            n_workers=n_workers,
-            min_is_days=best_min_is_days,
-            oos_days=best_oos_days,
-            max_dd_limit=max_dd_limit,
-            metric=metric,
-            kama_caches=kama_caches,
-            executor=executor,
-            verbose=True,
-            high_prices=high_prices,
-            low_prices=low_prices,
-        )
-    finally:
-        executor.shutdown(wait=True)
-
-    return best_result
-
-
-# ---------------------------------------------------------------------------
 # Report formatting
 # ---------------------------------------------------------------------------
 def format_wfo_report(result: WFOResult) -> str:
@@ -569,15 +407,13 @@ def format_wfo_report(result: WFOResult) -> str:
     lines.append("-" * 90)
     lines.append("Recommended Live Parameters (from final IS window):")
     lines.append("-" * 90)
-    lines.append(f"  r2_windows:            {fp.r2_windows}")
-    lines.append(f"  r2_weights:            {fp.r2_weights}")
+    lines.append(f"  r2_window:             {fp.r2_window}")
     lines.append(f"  kama_asset_period:     {fp.kama_asset_period}")
     lines.append(f"  kama_buffer:           {fp.kama_buffer}")
     lines.append(f"  atr_period:            {fp.atr_period}")
     lines.append(f"  risk_factor:           {fp.risk_factor}")
     lines.append(f"  top_n:                 {fp.top_n}")
-    lines.append(f"  rebal_period_weeks:    {fp.rebal_period_weeks}")
-    lines.append(f"  gap_threshold:         {fp.gap_threshold}")
+    lines.append(f"  rebal_days:            {fp.rebal_days}")
     lines.append(f"  target_vol:            {fp.target_vol}")
     lines.append(f"  max_leverage:          {fp.max_leverage}")
     lines.append(f"  portfolio_vol_lookback: {fp.portfolio_vol_lookback}")

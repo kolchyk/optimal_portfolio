@@ -109,7 +109,7 @@ regardless of whether it's a calm bond or a volatile tech stock.
 | `kama_spy_period` | 40 | 20, 30, 40, 50 | KAMA window for SPY regime filter |
 | `kama_buffer` | 0.005 | 0.005–0.03 (step 0.005) | Buffer to prevent false bull/bear switches |
 | `top_n` | 5 | 5–15 (step 5) | Max positions in portfolio |
-| `rebal_period_weeks` | 3 | 2–4 (step 1) | How often we review the portfolio (weeks) |
+| `rebal_days` | 21 | (fixed) | Monthly rebalancing period (trading days) |
 
 ### Vol-Targeting Parameters
 

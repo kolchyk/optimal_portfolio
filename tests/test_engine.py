@@ -91,7 +91,7 @@ def test_trade_log_is_list(sim_data):
 
 def test_custom_params(sim_data):
     close, open_, tickers, high, low = sim_data
-    params = StrategyParams(top_n=3, rebal_period_weeks=2, target_vol=0.15)
+    params = StrategyParams(top_n=3, rebal_days=10, target_vol=0.15)
     result = run_simulation(close, open_, tickers, INITIAL_CAPITAL, params=params,
                             high_prices=high, low_prices=low)
     assert isinstance(result, SimulationResult)

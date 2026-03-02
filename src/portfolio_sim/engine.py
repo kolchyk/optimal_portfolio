@@ -74,41 +74,24 @@ def _compute_rolling_r2_scores(log_prices: np.ndarray, lookback: int) -> np.ndar
     return scores
 
 
-def _precompute_blended_r2_score_df(
+def _precompute_r2_score_df(
     close_prices: pd.DataFrame,
     ticker_cols: list[str],
-    r2_windows: tuple[int, ...],
-    r2_weights: tuple[float, ...],
+    r2_window: int,
 ) -> pd.DataFrame:
-    """Pre-compute blended R² momentum scores across multiple lookback windows.
+    """Pre-compute R² momentum scores for a single lookback window.
 
-    For each window, computes annualized_return × R² for all tickers,
-    then returns the weighted average with renormalized weights for partial
-    availability (shorter windows produce valid scores before longer ones).
+    For each ticker, computes annualized_return × R² using OLS on log-prices.
     """
-    window_dfs: list[pd.DataFrame] = []
-    for window in r2_windows:
-        single_df = pd.DataFrame(
-            np.nan, index=close_prices.index, columns=ticker_cols,
-        )
-        for t in ticker_cols:
-            ser = close_prices[t].dropna()
-            if len(ser) < window:
-                continue
-            log_p = np.log(ser.values)
-            scores = _compute_rolling_r2_scores(log_p, window)
-            single_df.loc[ser.index, t] = scores
-        window_dfs.append(single_df)
-
-    blended = pd.DataFrame(0.0, index=close_prices.index, columns=ticker_cols)
-    weight_sum = pd.DataFrame(0.0, index=close_prices.index, columns=ticker_cols)
-
-    for df, weight in zip(window_dfs, r2_weights):
-        valid = df.notna()
-        blended += df.fillna(0.0) * weight
-        weight_sum += valid.astype(float) * weight
-
-    return blended / weight_sum.replace(0.0, np.nan)
+    score_df = pd.DataFrame(np.nan, index=close_prices.index, columns=ticker_cols)
+    for t in ticker_cols:
+        ser = close_prices[t].dropna()
+        if len(ser) < r2_window:
+            continue
+        log_p = np.log(ser.values)
+        scores = _compute_rolling_r2_scores(log_p, r2_window)
+        score_df.loc[ser.index, t] = scores
+    return score_df
 
 
 # ---------------------------------------------------------------------------
@@ -184,10 +167,8 @@ def run_simulation(
     _ticker_cols = [t for t in tickers if t in close_prices.columns]
     _prices = close_prices[_ticker_cols]
 
-    # R² Momentum scores (blended ensemble across multiple windows)
-    r2_score_df = _precompute_blended_r2_score_df(
-        _prices, _ticker_cols, p.r2_windows, p.r2_weights,
-    )
+    # R² Momentum scores (single lookback window)
+    r2_score_df = _precompute_r2_score_df(_prices, _ticker_cols, p.r2_window)
 
     # True ATR: max(H-L, |H-C_prev|, |L-C_prev|), rolling mean
     if high_prices is not None and low_prices is not None:
@@ -239,7 +220,7 @@ def run_simulation(
     current_scale: float = 1.0
 
     # Rebalance schedule
-    rebal_interval = p.rebal_period_weeks * 5
+    rebal_interval = p.rebal_days
     rebalance_dates = set(sim_dates[::rebal_interval])
     rebalance_dates.add(sim_dates[0])
 
@@ -380,12 +361,6 @@ def run_simulation(
                 if daily_close.get(t, 0.0) < t_kama * (1 - p.kama_buffer):
                     sells[t] = 0.0
                     continue
-
-            # Exit 2: Gap detection (|daily_return| > gap_threshold)
-            if t in returns_df.columns and date in returns_df.index:
-                daily_ret = returns_df.at[date, t]
-                if not np.isnan(daily_ret) and abs(daily_ret) > p.gap_threshold:
-                    sells[t] = 0.0
 
         # --- PERIODIC rotation (every N weeks) ---
         is_rebalance_day = date in rebalance_dates

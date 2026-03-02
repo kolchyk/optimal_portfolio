@@ -17,7 +17,6 @@ def test_constants_values():
 def test_search_space_has_expected_keys():
     assert "kama_asset_period" in SEARCH_SPACE
     assert "kama_buffer" in SEARCH_SPACE
-    assert "rebal_period_weeks" in SEARCH_SPACE
     assert "portfolio_vol_lookback" in SEARCH_SPACE
 
 

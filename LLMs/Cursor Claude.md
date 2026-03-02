@@ -32,7 +32,7 @@ def r2_objective(equity, max_dd_limit=0.30, min_n_days=20):
 Narrow ranges to prevent the optimizer from picking extreme values that overfit:
 - `r2_lookback`: `[60, 80, 100]` (drop 20, 40 — too short for stable OLS regression)
 - `top_n`: `[5, 10, 15]` (drop 20, 25 — too diluted)
-- `rebal_period_weeks`: `[2, 3, 4]` (drop 1 and 5-6 — whipsaw or too infrequent)
+- `rebal_days`: fixed at 21 (monthly rebalancing, removed from optimization)
 
 ### 3. Graduated Regime Filter (replace binary SPY KAMA)
 **Files:** [compare_methods.py:88-101](scripts/compare_methods.py#L88-L101), [compare_methods.py:193-271](scripts/compare_methods.py#L193-L271), [compare_methods.py:428-492](scripts/compare_methods.py#L428-L492)

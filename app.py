@@ -4,7 +4,8 @@ Run with: uv run streamlit run app.py
 Or: uv run python app.py (redirects to streamlit run)
 
 
-uv run python -m src.portfolio_sim walk-forward --optimize-schedule --metric calmar --refresh
+uv run python -m src.portfolio_sim walk-forward --metric sharpe --n-trials 200
+
 
 """
 

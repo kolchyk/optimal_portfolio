@@ -187,8 +187,6 @@ def _param_fingerprint(sidebar: dict) -> tuple:
         sidebar["top_n"],
         sidebar["kama_asset_period"],
         sidebar["kama_buffer"],
-        sidebar["rebal_period_weeks"],
-        sidebar["gap_threshold"],
         sidebar["atr_period"],
         sidebar["risk_factor"],
         sidebar["max_per_class"],
@@ -725,11 +723,8 @@ def _render_sidebar() -> dict:
 
             opt = st.session_state.get("optimized_params")
 
-            _ensemble_label = " + ".join(
-                f"{w:.0%}×{win}d"
-                for win, w in zip(_DEFAULTS.r2_windows, _DEFAULTS.r2_weights)
-            )
-            st.caption(f"R² Ensemble: {_ensemble_label}")
+            _default_r2 = opt.r2_window if opt else _DEFAULTS.r2_window
+            st.caption(f"R² Window: {_default_r2}d")
 
             _default_top_n = opt.top_n if opt else _DEFAULTS.top_n
             top_n = st.slider(
@@ -752,23 +747,10 @@ def _render_sidebar() -> dict:
                 help="Hysteresis threshold to prevent false regime switches",
             )
 
-            _default_rebal = opt.rebal_period_weeks if opt else _DEFAULTS.rebal_period_weeks
-            rebal_period_weeks = st.slider(
-                "Rebalancing Period (weeks)",
-                min_value=1, max_value=6, step=1,
-                value=_default_rebal,
-                help="How often the portfolio is reviewed (lazy-hold rebalancing)",
-            )
+            st.caption(f"Rebalancing: every {_DEFAULTS.rebal_days} trading days")
 
         # --- Group 4: Advanced / Vol-Targeting ---
         with st.expander("Advanced Settings", expanded=False):
-            _default_gap = opt.gap_threshold if opt else _DEFAULTS.gap_threshold
-            gap_threshold = st.slider(
-                "Gap Threshold", min_value=0.10, max_value=0.25,
-                value=float(_default_gap), step=0.025, format="%.3f",
-                help="Exclude assets with a single-day move exceeding this threshold",
-            )
-
             _default_atr = opt.atr_period if opt else _DEFAULTS.atr_period
             atr_period = st.slider(
                 "ATR Period (days)", min_value=10, max_value=30, step=5,
@@ -792,15 +774,15 @@ def _render_sidebar() -> dict:
 
             _default_tvol = opt.target_vol if opt else _DEFAULTS.target_vol
             target_vol = st.slider(
-                "Target Vol (annual)", min_value=0.05, max_value=0.25,
-                value=float(_default_tvol), step=0.05, format="%.2f",
+                "Target Vol (annual)", min_value=0.04, max_value=0.50,
+                value=float(_default_tvol), step=0.02, format="%.2f",
                 help="Target annual portfolio volatility",
             )
 
             _default_mlev = opt.max_leverage if opt else _DEFAULTS.max_leverage
             max_leverage = st.slider(
                 "Max Leverage", min_value=1.0, max_value=2.0,
-                value=float(_default_mlev), step=0.25, format="%.2f",
+                value=float(_default_mlev), step=0.1, format="%.1f",
                 help="Maximum scaling factor for vol-targeting overlay",
             )
 
@@ -821,8 +803,6 @@ def _render_sidebar() -> dict:
         "top_n": top_n,
         "kama_asset_period": kama_asset_period,
         "kama_buffer": kama_buffer,
-        "rebal_period_weeks": rebal_period_weeks,
-        "gap_threshold": gap_threshold,
         "atr_period": atr_period,
         "risk_factor": risk_factor,
         "max_per_class": max_per_class,
@@ -902,7 +882,6 @@ def _render_optimization_results() -> None:
                 f"Recommended live params: "
                 f"KAMA Asset={fp.kama_asset_period}, "
                 f"Buffer={fp.kama_buffer}, Top N={fp.top_n}, "
-                f"Rebal={fp.rebal_period_weeks}w, "
                 f"Target Vol={fp.target_vol:.0%}, "
                 f"Max Lev={fp.max_leverage}, "
                 f"Max/Class={fp.max_per_class}"
@@ -973,7 +952,6 @@ def main():
             st.toast(
                 f"Optimal: KAMA={best.kama_asset_period}, "
                 f"Top N={best.top_n}, "
-                f"Rebal={best.rebal_period_weeks}w, "
                 f"Vol={best.target_vol:.0%}, "
                 f"Max/Class={best.max_per_class}",
                 icon="\u2705",
@@ -1011,8 +989,6 @@ def main():
                 top_n=sidebar["top_n"],
                 kama_asset_period=sidebar["kama_asset_period"],
                 kama_buffer=sidebar["kama_buffer"],
-                rebal_period_weeks=sidebar["rebal_period_weeks"],
-                gap_threshold=sidebar["gap_threshold"],
                 atr_period=sidebar["atr_period"],
                 risk_factor=sidebar["risk_factor"],
                 max_per_class=sidebar["max_per_class"],

@@ -96,8 +96,11 @@ def _raw_metric_objective(
     max_dd_limit: float,
     metric: str = "total_return",
 ) -> float:
-    """Raw metric objective — returns metric value."""
-    return compute_metrics(equity)[metric]
+    """Raw metric objective — returns metric value, penalizing excess drawdown."""
+    metrics = compute_metrics(equity)
+    if metrics["max_drawdown"] > max_dd_limit:
+        return -999.0
+    return metrics[metric]
 
 
 # ---------------------------------------------------------------------------
